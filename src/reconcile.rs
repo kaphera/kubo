@@ -1,10 +1,10 @@
 mod steps;
 
-use std::{marker::PhantomData, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::runtime::controller::Action;
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     ReconcilerError,
@@ -73,33 +73,38 @@ pub enum ReconcileError {
 ///     })
 ///     .await
 /// ```
-pub struct Reconcile<'r, E: Environment + Sync> {
+pub struct Reconcile<'r, E: Environment + Sync, R: EnvResource> {
     env: &'r E,
     cx: &'r ConditionContext,
     conditions: &'r mut Vec<Condition>,
+    obj: Arc<R>,
     apply_steps: Vec<Box<dyn ApplyStep<E> + 'r>>,
     cleanup_steps: Vec<Box<dyn CleanableStep<E> + 'r>>,
     steady_interval: Duration,
     rotation_annotation: Option<&'r str>,
-    _e: PhantomData<E>,
 }
 
-impl<'r, E: Environment + Sync> Reconcile<'r, E> {
+impl<'r, E: Environment + Sync, R: EnvResource> Reconcile<'r, E, R> {
     /// Start a reconcile pass.
     ///
     /// `conditions` is mutated in place — the runner appends/updates
     /// gate/poll conditions as it walks the pipeline. The status
     /// closure receives a reference to this vec on every tick.
-    pub fn new(env: &'r E, cx: &'r ConditionContext, conditions: &'r mut Vec<Condition>) -> Self {
+    pub fn new(
+        env: &'r E,
+        cx: &'r ConditionContext,
+        conditions: &'r mut Vec<Condition>,
+        obj: Arc<R>,
+    ) -> Self {
         Self {
             env,
             cx,
             conditions,
+            obj,
             apply_steps: Vec::new(),
             cleanup_steps: Vec::new(),
             steady_interval: DEFAULT_STEADY_INTERVAL,
             rotation_annotation: None,
-            _e: PhantomData,
         }
     }
 
@@ -227,23 +232,34 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
     /// based on the object's deletion timestamp, and patches status
     /// after every step (only when changed, compared via `PartialEq`).
     ///
+    /// The framework extracts the object's existing status and passes
+    /// it to `build_status` on every tick as the third argument (`prev`).
+    /// The closure can use it to preserve fields that haven't been
+    /// recomputed yet (e.g. because the producing effect hasn't run on
+    /// this pass).
+    ///
     /// All Kubernetes interactions go through the [`Environment`] trait
     /// passed to [`Reconcile::new`], making this method fully
     /// unit-testable.
-    pub async fn run<R, S, F>(
+    pub async fn run<S, F>(
         self,
         finalizer_name: &str,
-        obj: Arc<R>,
         build_status: F,
     ) -> Result<Action, ReconcileError>
     where
-        R: EnvResource,
-        S: Serialize + PartialEq,
-        F: Fn(&[Condition], &State) -> S,
+        S: Serialize + DeserializeOwned + Default + PartialEq,
+        F: Fn(&[Condition], &State, &S) -> S,
     {
+        let obj = &self.obj;
         let namespace = obj.meta().namespace.clone().unwrap_or_default();
         let name = obj.meta().name.clone().unwrap_or_default();
         let obj_ref = ObjectRef::new(&namespace, &name);
+
+        let prev_status: S = serde_json::to_value(&**obj)
+            .ok()
+            .and_then(|v| v.get("status").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
 
         let is_deleting = obj.meta().deletion_timestamp.is_some();
 
@@ -260,7 +276,9 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
                 return Ok(Action::await_change());
             }
 
-            let action = self.run_cleanup::<R, S, F>(&obj_ref, &build_status).await?;
+            let action = self
+                .run_cleanup::<S, F>(&obj_ref, &prev_status, &build_status)
+                .await?;
             let finalizers: Vec<String> = obj
                 .meta()
                 .finalizers
@@ -292,7 +310,7 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
             });
 
             let action = self
-                .run_apply::<R, S, F>(&obj_ref, &build_status, has_rotation)
+                .run_apply::<S, F>(&obj_ref, &prev_status, &build_status, has_rotation)
                 .await?;
             Ok(action)
         }
@@ -309,16 +327,16 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
     /// [`RotationRequested`] into the state bag before running steps,
     /// and removes the annotation from the object after all steps
     /// complete successfully.
-    async fn run_apply<R, S, F>(
+    async fn run_apply<S, F>(
         self,
         obj_ref: &ObjectRef,
+        prev_status: &S,
         build_status: &F,
         rotation_key: Option<&str>,
     ) -> Result<Action, ReconcileError>
     where
-        R: EnvResource,
         S: Serialize + PartialEq,
-        F: Fn(&[Condition], &State) -> S,
+        F: Fn(&[Condition], &State, &S) -> S,
     {
         let env = self.env;
         let mut state = State::new();
@@ -332,7 +350,7 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
         for step in self.apply_steps.iter() {
             match step.run_apply(env, &mut state).await {
                 StepProgress::Continue => {
-                    let current = build_status(self.conditions, &state);
+                    let current = build_status(self.conditions, &state, prev_status);
                     if last_patched.as_ref() != Some(&current) {
                         patch_status_via_env::<R, S>(env, obj_ref, &current).await?;
                         last_patched = Some(current);
@@ -341,7 +359,7 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
                 StepProgress::Wait { condition, backoff } => {
                     let retry_after = compute_retry_after(self.conditions, &condition, &*backoff);
                     set_condition(self.conditions, condition);
-                    let current = build_status(self.conditions, &state);
+                    let current = build_status(self.conditions, &state, prev_status);
                     if last_patched.as_ref() != Some(&current) {
                         patch_status_via_env::<R, S>(env, obj_ref, &current).await?;
                     }
@@ -352,7 +370,7 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
         }
 
         set_condition(self.conditions, self.cx.reconciled_condition());
-        let current = build_status(self.conditions, &state);
+        let current = build_status(self.conditions, &state, prev_status);
         if last_patched.as_ref() != Some(&current) {
             patch_status_via_env::<R, S>(env, obj_ref, &current).await?;
         }
@@ -372,15 +390,18 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
     }
 
     /// Walk effects in reverse, calling cleanup on each.
-    async fn run_cleanup<R, S, F>(
+    ///
+    /// Status patches that fail with 404 are tolerated — the resource may
+    /// have been garbage-collected before cleanup completes.
+    async fn run_cleanup<S, F>(
         &self,
         obj_ref: &ObjectRef,
+        prev_status: &S,
         build_status: &F,
     ) -> Result<Action, ReconcileError>
     where
-        R: EnvResource,
         S: Serialize + PartialEq,
-        F: Fn(&[Condition], &State) -> S,
+        F: Fn(&[Condition], &State, &S) -> S,
     {
         let env = self.env;
         let state = State::new();
@@ -401,16 +422,16 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
                         previous: self.conditions.iter().find(|c| c.type_ == "Cleanup"),
                         now: k8s_openapi::jiff::Timestamp::now(),
                     });
-                    let current = build_status(self.conditions, &state);
-                    patch_status_via_env::<R, S>(env, obj_ref, &current).await?;
+                    let current = build_status(self.conditions, &state, prev_status);
+                    let _ = patch_status_via_env::<R, S>(env, obj_ref, &current).await;
                     return Ok(Action::requeue(retry_after));
                 }
                 CleanupProgress::Error(e) => return Err(e.into()),
             }
         }
 
-        let current = build_status(self.conditions, &state);
-        patch_status_via_env::<R, S>(env, obj_ref, &current).await?;
+        let current = build_status(self.conditions, &state, prev_status);
+        let _ = patch_status_via_env::<R, S>(env, obj_ref, &current).await;
         Ok(Action::await_change())
     }
 }

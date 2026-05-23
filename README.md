@@ -25,15 +25,15 @@ use k8s_operator_reconciler::utils::ConditionContext;
 let cx = ConditionContext::new(generation)
     .with_ready_reason("Provisioned", "All resources created");
 
-let action = Reconcile::new(&env, &cx, &mut conditions)
+let action = Reconcile::new(&env, &cx, &mut conditions, obj)
     .gate(ResolveVaultInstance { namespace, instance_ref, cx })
     .effect(EnableKv2Mount { namespace, name, .. })
     .effect(CreateAccessSecret { namespace, secret_name, .. })
     .poll(WaitForMountReady { ready, cx })
-    .run(FINALIZER, obj, |conds, state| MyStatus {
+    .run(FINALIZER, |conds, state, prev| MyStatus {
         observed_generation: Some(generation),
         conditions: conds.to_vec(),
-        mount_path: state.get::<EnableKv2Mount>().cloned(),
+        mount_path: state.get::<EnableKv2Mount>().cloned().or(|| prev.mount_path),
     })
     .await?;
 ```

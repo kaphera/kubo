@@ -19,6 +19,7 @@ use k8s_operator_reconciler::{
     environment::{Environment, EnvironmentError, ObjectRef},
     gate::{Gate, Outcome},
     poll::{Poll, PollState},
+    reconcile::Reconcile,
     state::{State, StateKey},
     testing::TestEnvironment,
     utils::ConditionContext,
@@ -303,7 +304,8 @@ fn pipeline_composes_with_typed_state() {
     .unwrap();
 
     // Build the reconcile pipeline — validates type composition.
-    let _reconcile = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let obj = make_kvm("test-ns", "my-kvm", false);
+    let _reconcile = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: instance_ref.clone(),
             namespace: namespace.clone(),
@@ -608,7 +610,7 @@ async fn run_apply_full_pipeline() {
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
             namespace: "test-ns".to_string(),
@@ -625,13 +627,11 @@ async fn run_apply_full_pipeline() {
             secret_name: "access-secret".to_string(),
             cleaned_up: effect2_cleaned.clone(),
         })
-        .run("test-finalizer", obj.clone(), |conds, state| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
-                mount_path: state.get::<EnableKv2Mount>().cloned(),
-                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
-            }
+        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
+            observed_generation: Some(generation),
+            conditions: conds.to_vec(),
+            mount_path: state.get::<EnableKv2Mount>().cloned(),
+            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
         })
         .await
         .unwrap();
@@ -676,7 +676,7 @@ async fn run_cleanup_removes_finalizer() {
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .effect(EnableKv2Mount {
             namespace: "test-ns".to_string(),
             name: "my-kvm".to_string(),
@@ -688,7 +688,7 @@ async fn run_cleanup_removes_finalizer() {
             secret_name: "access-secret".to_string(),
             cleaned_up: effect2_cleaned.clone(),
         })
-        .run("test-finalizer", obj.clone(), |conds, _state| {
+        .run("test-finalizer", |conds, _state, _prev| {
             VaultKvMountStatus {
                 observed_generation: Some(generation),
                 conditions: conds.to_vec(),
@@ -729,7 +729,7 @@ async fn run_apply_gate_waits() {
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
 
-    let action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
             namespace: "test-ns".to_string(),
@@ -741,13 +741,11 @@ async fn run_apply_gate_waits() {
             vault_available: Arc::new(AtomicBool::new(true)),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", obj.clone(), |conds, state| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
-                mount_path: state.get::<EnableKv2Mount>().cloned(),
-                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
-            }
+        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
+            observed_generation: Some(generation),
+            conditions: conds.to_vec(),
+            mount_path: state.get::<EnableKv2Mount>().cloned(),
+            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
         })
         .await
         .unwrap();
@@ -803,7 +801,7 @@ async fn run_apply_patches_status_on_tick() {
 
     let vault_available = Arc::new(AtomicBool::new(true));
 
-    let action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
             namespace: "test-ns".to_string(),
@@ -820,13 +818,11 @@ async fn run_apply_patches_status_on_tick() {
             secret_name: "access-secret".to_string(),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", obj.clone(), |conds, state| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
-                mount_path: state.get::<EnableKv2Mount>().cloned(),
-                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
-            }
+        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
+            observed_generation: Some(generation),
+            conditions: conds.to_vec(),
+            mount_path: state.get::<EnableKv2Mount>().cloned(),
+            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
         })
         .await
         .unwrap();
@@ -903,7 +899,7 @@ async fn run_apply_skips_redundant_patches() {
     // struct (except conditions change when Ready is set at the end).
     // Between gate and effects, conditions don't change, so the
     // closure output should be identical → skip patch.
-    let _action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
             namespace: "test-ns".to_string(),
@@ -915,7 +911,7 @@ async fn run_apply_skips_redundant_patches() {
             vault_available: Arc::new(AtomicBool::new(true)),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", obj.clone(), move |conds, _state| {
+        .run("test-finalizer", move |conds, _state, _prev| {
             // Count each unique call.
             patch_count_clone.fetch_add(1, Ordering::Relaxed);
             VaultKvMountStatus {
@@ -984,7 +980,7 @@ async fn status_ticks_show_causal_progression() {
     })
     .unwrap();
 
-    let _action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
             namespace: "test-ns".to_string(),
@@ -1001,13 +997,11 @@ async fn status_ticks_show_causal_progression() {
             secret_name: "access-secret".to_string(),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", obj.clone(), |conds, state| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
-                mount_path: state.get::<EnableKv2Mount>().cloned(),
-                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
-            }
+        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
+            observed_generation: Some(generation),
+            conditions: conds.to_vec(),
+            mount_path: state.get::<EnableKv2Mount>().cloned(),
+            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
         })
         .await
         .unwrap();
@@ -1136,7 +1130,7 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
         }
     }
 
-    let _action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .rotation_annotation("test.kaphera.cloud/rotate-requested")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -1146,7 +1140,7 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
         .effect(CheckRotationEffect {
             saw_rotation: saw_rotation_clone,
         })
-        .run("test-finalizer", obj.clone(), |conds, _state| {
+        .run("test-finalizer", |conds, _state, _prev| {
             VaultKvMountStatus {
                 observed_generation: Some(generation),
                 conditions: conds.to_vec(),
@@ -1228,7 +1222,7 @@ async fn no_rotation_when_annotation_absent() {
         }
     }
 
-    let _action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
         .rotation_annotation("test.kaphera.cloud/rotate-requested")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -1238,7 +1232,7 @@ async fn no_rotation_when_annotation_absent() {
         .effect(CheckRotationEffect2 {
             saw_rotation: saw_rotation_clone,
         })
-        .run("test-finalizer", obj.clone(), |conds, _state| {
+        .run("test-finalizer", |conds, _state, _prev| {
             VaultKvMountStatus {
                 observed_generation: Some(generation),
                 conditions: conds.to_vec(),
