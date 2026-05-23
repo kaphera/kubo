@@ -138,6 +138,17 @@ pub trait Environment: Send + Sync {
         finalizers: Vec<String>,
     ) -> Result<(), EnvironmentError>;
 
+    /// Remove a single annotation from a namespaced resource (merge patch).
+    ///
+    /// Used by the framework to clear rotation trigger annotations after a
+    /// successful reconcile pass. The merge patch sets the annotation value
+    /// to `null`, which removes it regardless of which field manager owns it.
+    async fn remove_annotation<T: EnvResource>(
+        &self,
+        r: &ObjectRef,
+        annotation_key: &str,
+    ) -> Result<(), EnvironmentError>;
+
     /// Fetch a single cluster-scoped resource by name. Returns `None` if not found.
     async fn get_cluster<T: ClusterEnvResource>(
         &self,

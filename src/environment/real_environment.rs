@@ -103,6 +103,24 @@ impl Environment for RealEnvironment {
         Ok(())
     }
 
+    async fn remove_annotation<T: EnvResource>(
+        &self,
+        r: &ObjectRef,
+        annotation_key: &str,
+    ) -> Result<(), EnvironmentError> {
+        let api = Api::<T>::namespaced(self.client.clone(), &r.namespace);
+        let patch = serde_json::json!({
+            "metadata": {
+                "annotations": {
+                    annotation_key: null
+                }
+            }
+        });
+        api.patch(&r.name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await?;
+        Ok(())
+    }
+
     async fn get_cluster<T: ClusterEnvResource>(
         &self,
         name: &str,

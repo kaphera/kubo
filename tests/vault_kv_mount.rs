@@ -1061,3 +1061,197 @@ async fn status_ticks_show_causal_progression() {
         "resolve before mount",
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Rotation annotation tests
+// ═══════════════════════════════════════════════════════════════════════
+
+use k8s_operator_reconciler::state::RotationRequested;
+use std::collections::BTreeMap;
+
+/// When the rotation annotation is present, `RotationRequested` is
+/// inserted into the state bag and the annotation is removed after
+/// the pipeline succeeds.
+#[tokio::test]
+async fn rotation_annotation_triggers_state_and_is_removed() {
+    let env = TestEnvironment::new();
+    let generation = 1i64;
+    let cx = ConditionContext::new(generation)
+        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
+    let mut conditions: Vec<Condition> = Vec::new();
+
+    // Build object with the rotation annotation present.
+    let mut kvm = VaultKvMount::new(
+        "my-kvm",
+        VaultKvMountSpec {
+            instance_ref: "my-vault".to_string(),
+            access_secret_name: "access-secret".to_string(),
+        },
+    );
+    kvm.metadata.namespace = Some("test-ns".to_string());
+    kvm.metadata.annotations = Some(BTreeMap::from([(
+        "test.kaphera.cloud/rotate-requested".to_string(),
+        "true".to_string(),
+    )]));
+    let obj = Arc::new(kvm);
+    env.seed((*obj).clone());
+
+    // Seed VaultInstance.
+    let mut vi = VaultInstance::new("my-vault", VaultInstanceSpec { replicas: 1 });
+    vi.metadata.namespace = Some("test-ns".to_string());
+    env.seed(vi);
+    env.mutate::<VaultInstance>(&ObjectRef::new("test-ns", "my-vault"), |body| {
+        body.as_object_mut().unwrap().insert(
+            "status".to_string(),
+            serde_json::json!({
+                "conditions": [],
+                "address": "http://vault:8200"
+            }),
+        );
+    })
+    .unwrap();
+
+    // Track whether effects saw the rotation marker.
+    let saw_rotation = Arc::new(AtomicBool::new(false));
+    let saw_rotation_clone = saw_rotation.clone();
+
+    // A minimal effect that checks for RotationRequested in state.
+    struct CheckRotationEffect {
+        saw_rotation: Arc<AtomicBool>,
+    }
+
+    impl StateKey for CheckRotationEffect {
+        type Value = ();
+    }
+
+    #[async_trait]
+    impl<E: Environment + Sync> Effect<E> for CheckRotationEffect {
+        type Error = VaultKvMountError;
+
+        async fn apply(&self, _env: &E, state: &State) -> Result<EffectOutcome<()>, Self::Error> {
+            if state.contains::<RotationRequested>() {
+                self.saw_rotation.store(true, Ordering::Relaxed);
+            }
+            Ok(EffectOutcome::Done(()))
+        }
+    }
+
+    let _action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+        .rotation_annotation("test.kaphera.cloud/rotate-requested")
+        .gate(ResolveVaultInstance {
+            instance_ref: "my-vault".to_string(),
+            namespace: "test-ns".to_string(),
+            cx: ConditionContext::new(generation),
+        })
+        .effect(CheckRotationEffect {
+            saw_rotation: saw_rotation_clone,
+        })
+        .run("test-finalizer", obj.clone(), |conds, _state| {
+            VaultKvMountStatus {
+                observed_generation: Some(generation),
+                conditions: conds.to_vec(),
+                mount_path: None,
+                resolved_instance_ref: None,
+            }
+        })
+        .await
+        .unwrap();
+
+    // The effect should have seen the RotationRequested marker.
+    assert!(
+        saw_rotation.load(Ordering::Relaxed),
+        "Effect should observe RotationRequested in state"
+    );
+
+    // The annotation should have been removed from the stored object.
+    let stored = env
+        .get::<VaultKvMount>(&ObjectRef::new("test-ns", "my-kvm"))
+        .await
+        .unwrap()
+        .unwrap();
+    let annotations = stored.metadata.annotations.unwrap_or_default();
+    assert!(
+        !annotations.contains_key("test.kaphera.cloud/rotate-requested"),
+        "Rotation annotation should be removed after success"
+    );
+}
+
+/// When the rotation annotation is NOT present, `RotationRequested` is
+/// not inserted into the state bag.
+#[tokio::test]
+async fn no_rotation_when_annotation_absent() {
+    let env = TestEnvironment::new();
+    let generation = 1i64;
+    let cx = ConditionContext::new(generation)
+        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
+    let mut conditions: Vec<Condition> = Vec::new();
+
+    // Build object WITHOUT the rotation annotation.
+    let obj = make_kvm("test-ns", "my-kvm", false);
+    env.seed((*obj).clone());
+
+    // Seed VaultInstance.
+    let mut vi = VaultInstance::new("my-vault", VaultInstanceSpec { replicas: 1 });
+    vi.metadata.namespace = Some("test-ns".to_string());
+    env.seed(vi);
+    env.mutate::<VaultInstance>(&ObjectRef::new("test-ns", "my-vault"), |body| {
+        body.as_object_mut().unwrap().insert(
+            "status".to_string(),
+            serde_json::json!({
+                "conditions": [],
+                "address": "http://vault:8200"
+            }),
+        );
+    })
+    .unwrap();
+
+    let saw_rotation = Arc::new(AtomicBool::new(false));
+    let saw_rotation_clone = saw_rotation.clone();
+
+    struct CheckRotationEffect2 {
+        saw_rotation: Arc<AtomicBool>,
+    }
+
+    impl StateKey for CheckRotationEffect2 {
+        type Value = ();
+    }
+
+    #[async_trait]
+    impl<E: Environment + Sync> Effect<E> for CheckRotationEffect2 {
+        type Error = VaultKvMountError;
+
+        async fn apply(&self, _env: &E, state: &State) -> Result<EffectOutcome<()>, Self::Error> {
+            if state.contains::<RotationRequested>() {
+                self.saw_rotation.store(true, Ordering::Relaxed);
+            }
+            Ok(EffectOutcome::Done(()))
+        }
+    }
+
+    let _action = k8s_operator_reconciler::reconcile::Reconcile::new(&env, &cx, &mut conditions)
+        .rotation_annotation("test.kaphera.cloud/rotate-requested")
+        .gate(ResolveVaultInstance {
+            instance_ref: "my-vault".to_string(),
+            namespace: "test-ns".to_string(),
+            cx: ConditionContext::new(generation),
+        })
+        .effect(CheckRotationEffect2 {
+            saw_rotation: saw_rotation_clone,
+        })
+        .run("test-finalizer", obj.clone(), |conds, _state| {
+            VaultKvMountStatus {
+                observed_generation: Some(generation),
+                conditions: conds.to_vec(),
+                mount_path: None,
+                resolved_instance_ref: None,
+            }
+        })
+        .await
+        .unwrap();
+
+    // The effect should NOT have seen RotationRequested.
+    assert!(
+        !saw_rotation.load(Ordering::Relaxed),
+        "Effect should not observe RotationRequested when annotation is absent"
+    );
+}

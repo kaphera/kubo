@@ -303,6 +303,30 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
+    async fn remove_annotation<T: EnvResource>(
+        &self,
+        r: &ObjectRef,
+        annotation_key: &str,
+    ) -> Result<(), EnvironmentError> {
+        let key = Self::key::<T>(r);
+        let mut store = self.store.lock().unwrap();
+        let row = store
+            .rows
+            .get_mut(&key)
+            .ok_or_else(|| EnvironmentError::Other(format!("remove_annotation: not found: {r}")))?;
+        if let Some(annotations) = row
+            .body
+            .as_object_mut()
+            .and_then(|o| o.get_mut("metadata"))
+            .and_then(|m| m.as_object_mut())
+            .and_then(|m| m.get_mut("annotations"))
+            .and_then(|a| a.as_object_mut())
+        {
+            annotations.remove(annotation_key);
+        }
+        Ok(())
+    }
+
     async fn get_cluster<T: ClusterEnvResource>(
         &self,
         name: &str,
@@ -336,8 +360,6 @@ impl Environment for TestEnvironment {
         store.cluster_rows.remove(&key);
         Ok(())
     }
-
-    // ─── Dynamic (untyped) ────────────────────────────────────
 
     async fn get_dynamic(
         &self,

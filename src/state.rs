@@ -106,3 +106,17 @@ impl State {
         self.0.contains_key(&TypeId::of::<K>())
     }
 }
+
+/// Framework-provided key that signals an annotation-triggered rotation was
+/// requested on the reconciled resource.
+///
+/// Effects check `state.contains::<RotationRequested>()` to decide whether
+/// they should regenerate credentials, even when the resource spec is otherwise
+/// unchanged. The annotation is typically cleared by the operator after the
+/// rotation pass completes so that the effect does not fire on every subsequent
+/// reconciliation.
+pub struct RotationRequested;
+
+impl StateKey for RotationRequested {
+    type Value = ();
+}

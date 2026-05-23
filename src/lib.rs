@@ -77,6 +77,7 @@ pub mod effect;
 pub mod gate;
 pub mod poll;
 
+pub mod group;
 pub mod reconcile;
 
 #[cfg(feature = "test-support")]

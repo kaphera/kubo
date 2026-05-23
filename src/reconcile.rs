@@ -12,14 +12,17 @@ use crate::{
     effect::Effect,
     environment::{EnvResource, Environment, EnvironmentError, ObjectRef},
     gate::Gate,
+    group::Group,
     poll::Poll,
     reconcile::steps::{
         ApplyStep, CleanableStep, CleanupProgress, EffectStep, GateAsStep, GateStep, GuardStep,
         PollStep,
     },
-    state::{State, StateKey},
+    state::{RotationRequested, State, StateKey},
     utils::{ConditionContext, set_condition},
 };
+
+use tracing::warn;
 
 enum StepProgress {
     Continue,
@@ -77,6 +80,7 @@ pub struct Reconcile<'r, E: Environment + Sync> {
     apply_steps: Vec<Box<dyn ApplyStep<E> + 'r>>,
     cleanup_steps: Vec<Box<dyn CleanableStep<E> + 'r>>,
     steady_interval: Duration,
+    rotation_annotation: Option<&'r str>,
     _e: PhantomData<E>,
 }
 
@@ -94,6 +98,7 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
             apply_steps: Vec::new(),
             cleanup_steps: Vec::new(),
             steady_interval: DEFAULT_STEADY_INTERVAL,
+            rotation_annotation: None,
             _e: PhantomData,
         }
     }
@@ -171,6 +176,45 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
         self
     }
 
+    /// Add a grouped sub-pipeline that collapses into a single effect.
+    ///
+    /// The group maintains a scoped state bag — sub-effects within the group
+    /// can read each other's outputs, but those intermediates never leak into
+    /// the outer pipeline. Only the reducer's output is published under the
+    /// group's `StateKey`.
+    ///
+    /// Cleanup runs in reverse declaration order within the group, at the
+    /// position of the group in the outer pipeline's cleanup sequence.
+    pub fn group<V>(mut self, group: Group<V, E>) -> Self
+    where
+        V: Send + Sync + 'static,
+        E: 'static,
+    {
+        let step = EffectStep::new(group);
+        let shared = Arc::new(step);
+        self.apply_steps
+            .push(Box::new(SharedApplyStep(Arc::clone(&shared))));
+        self.cleanup_steps
+            .push(Box::new(SharedCleanableStep(shared)));
+        self
+    }
+
+    /// Declare an annotation key that triggers credential rotation.
+    ///
+    /// When the reconciled object carries this annotation, the framework
+    /// inserts [`RotationRequested`](crate::state::RotationRequested) into
+    /// the state bag before running the pipeline. Effects query it via
+    /// `state.contains::<RotationRequested>()` to decide whether to
+    /// regenerate secrets.
+    ///
+    /// After a fully-successful apply pass the framework removes the
+    /// annotation via merge patch, preventing re-rotation on subsequent
+    /// reconciles.
+    pub fn rotation_annotation(mut self, key: &'r str) -> Self {
+        self.rotation_annotation = Some(key);
+        self
+    }
+
     /// Requeue interval after a fully-successful reconcile (default: 60s).
     pub fn steady_state_interval(mut self, d: Duration) -> Self {
         self.steady_interval = d;
@@ -237,7 +281,19 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
                     .patch_finalizers::<R>(&obj_ref, new_finalizers)
                     .await?;
             }
-            let action = self.run_apply::<R, S, F>(&obj_ref, &build_status).await?;
+
+            // Detect rotation annotation before running the pipeline.
+            let has_rotation = self.rotation_annotation.and_then(|key| {
+                obj.meta()
+                    .annotations
+                    .as_ref()
+                    .filter(|a| a.contains_key(key))
+                    .map(|_| key)
+            });
+
+            let action = self
+                .run_apply::<R, S, F>(&obj_ref, &build_status, has_rotation)
+                .await?;
             Ok(action)
         }
     }
@@ -248,10 +304,16 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
     /// resulting status differs from the last-patched value, a status
     /// patch is issued via the environment. This gives intermediate
     /// observability without redundant API calls on no-op reconciles.
+    ///
+    /// When `rotation_key` is `Some`, the framework inserts
+    /// [`RotationRequested`] into the state bag before running steps,
+    /// and removes the annotation from the object after all steps
+    /// complete successfully.
     async fn run_apply<R, S, F>(
         self,
         obj_ref: &ObjectRef,
         build_status: &F,
+        rotation_key: Option<&str>,
     ) -> Result<Action, ReconcileError>
     where
         R: EnvResource,
@@ -261,6 +323,11 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
         let env = self.env;
         let mut state = State::new();
         let mut last_patched: Option<S> = None;
+
+        // Signal rotation to effects via the state bag.
+        if rotation_key.is_some() {
+            state.insert::<RotationRequested>(());
+        }
 
         for step in self.apply_steps.iter() {
             match step.run_apply(env, &mut state).await {
@@ -289,6 +356,18 @@ impl<'r, E: Environment + Sync> Reconcile<'r, E> {
         if last_patched.as_ref() != Some(&current) {
             patch_status_via_env::<R, S>(env, obj_ref, &current).await?;
         }
+
+        if let Some(key) = rotation_key {
+            if let Err(e) = env.remove_annotation::<R>(obj_ref, key).await {
+                warn!(
+                    error = %e,
+                    annotation = %key,
+                    obj = %obj_ref,
+                    "Failed to remove rotation annotation (non-fatal)"
+                );
+            }
+        }
+
         Ok(Action::requeue(self.steady_interval))
     }
 
