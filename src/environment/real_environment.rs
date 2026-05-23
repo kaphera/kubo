@@ -13,7 +13,8 @@
 use async_trait::async_trait;
 use kube::{
     Api,
-    api::{DeleteParams, Patch, PatchParams},
+    api::{DeleteParams, DynamicObject, Patch, PatchParams},
+    discovery::ApiResource,
 };
 use serde_json::json;
 
@@ -126,6 +127,30 @@ impl Environment for RealEnvironment {
     ) -> Result<(), EnvironmentError> {
         let api = Api::<T>::all(self.client.clone());
         api.delete(name, &DeleteParams::default()).await?;
+        Ok(())
+    }
+
+    async fn get_dynamic(
+        &self,
+        api_resource: &ApiResource,
+        r: &ObjectRef,
+    ) -> Result<Option<DynamicObject>, EnvironmentError> {
+        let api =
+            Api::<DynamicObject>::namespaced_with(self.client.clone(), &r.namespace, api_resource);
+        Ok(api.get_opt(&r.name).await?)
+    }
+
+    async fn apply_dynamic(
+        &self,
+        api_resource: &ApiResource,
+        namespace: &str,
+        name: &str,
+        obj: &serde_json::Value,
+    ) -> Result<(), EnvironmentError> {
+        let api =
+            Api::<DynamicObject>::namespaced_with(self.client.clone(), namespace, api_resource);
+        let params = self.ssa_params();
+        api.patch(name, &params, &Patch::Apply(obj)).await?;
         Ok(())
     }
 }

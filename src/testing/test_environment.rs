@@ -35,6 +35,8 @@ use std::{
 
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use kube::api::DynamicObject;
+use kube::discovery::ApiResource;
 use serde_json::Value;
 
 use crate::environment::{
@@ -104,6 +106,33 @@ impl TestEnvironment {
             .unwrap()
             .cluster_rows
             .insert(Self::cluster_key::<T>(&name), Row { body });
+        self
+    }
+
+    /// Seed a dynamic resource into the test store.
+    ///
+    /// The `api_resource` provides the kind string used as the storage key.
+    /// The `obj` must be a valid JSON object with `metadata.name` and
+    /// `metadata.namespace`.
+    pub fn seed_dynamic(&self, api_resource: &ApiResource, obj: serde_json::Value) -> &Self {
+        let name = obj
+            .get("metadata")
+            .and_then(|m| m.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let namespace = obj
+            .get("metadata")
+            .and_then(|m| m.get("namespace"))
+            .and_then(|n| n.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let r = ObjectRef::new(namespace, name);
+        self.store
+            .lock()
+            .unwrap()
+            .rows
+            .insert((api_resource.kind.clone(), r), Row { body: obj });
         self
     }
 
@@ -305,6 +334,35 @@ impl Environment for TestEnvironment {
         let key = Self::cluster_key::<T>(name);
         let mut store = self.store.lock().unwrap();
         store.cluster_rows.remove(&key);
+        Ok(())
+    }
+
+    // ─── Dynamic (untyped) ────────────────────────────────────
+
+    async fn get_dynamic(
+        &self,
+        api_resource: &ApiResource,
+        r: &ObjectRef,
+    ) -> Result<Option<DynamicObject>, EnvironmentError> {
+        let key = (api_resource.kind.clone(), r.clone());
+        let store = self.store.lock().unwrap();
+        match store.rows.get(&key) {
+            None => Ok(None),
+            Some(row) => Ok(Some(serde_json::from_value(row.body.clone())?)),
+        }
+    }
+
+    async fn apply_dynamic(
+        &self,
+        api_resource: &ApiResource,
+        namespace: &str,
+        name: &str,
+        obj: &serde_json::Value,
+    ) -> Result<(), EnvironmentError> {
+        let r = ObjectRef::new(namespace, name);
+        let key = (api_resource.kind.clone(), r);
+        let mut store = self.store.lock().unwrap();
+        store.rows.insert(key, Row { body: obj.clone() });
         Ok(())
     }
 }

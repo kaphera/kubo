@@ -19,6 +19,8 @@ use std::fmt;
 use async_trait::async_trait;
 use k8s_openapi::{ClusterResourceScope, NamespaceResourceScope};
 use kube::Resource;
+use kube::api::DynamicObject;
+use kube::discovery::ApiResource;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -149,6 +151,29 @@ pub trait Environment: Send + Sync {
     async fn delete_cluster<T: ClusterEnvResource>(
         &self,
         name: &str,
+    ) -> Result<(), EnvironmentError>;
+
+    /// Fetch a namespaced dynamic resource. Returns `None` if not found (404).
+    ///
+    /// Use this for CRDs that lack typed Rust bindings (e.g. Bank-Vaults
+    /// Vault, CNPG Cluster). The `ApiResource` descriptor tells the client
+    /// which GVK to query.
+    async fn get_dynamic(
+        &self,
+        api_resource: &ApiResource,
+        r: &ObjectRef,
+    ) -> Result<Option<DynamicObject>, EnvironmentError>;
+
+    /// Server-Side Apply a namespaced dynamic resource.
+    ///
+    /// The `obj` value must be a complete resource manifest (with
+    /// `apiVersion`, `kind`, `metadata`, and `spec`).
+    async fn apply_dynamic(
+        &self,
+        api_resource: &ApiResource,
+        namespace: &str,
+        name: &str,
+        obj: &Value,
     ) -> Result<(), EnvironmentError>;
 }
 
