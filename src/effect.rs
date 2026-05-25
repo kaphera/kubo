@@ -49,8 +49,11 @@ use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
 use crate::{
-    backoff::Backoff, cleanup::CleanupAction, environment::Environment, state::State,
-    state::StateKey,
+    ReconcileContext,
+    backoff::Backoff,
+    cleanup::CleanupAction,
+    environment::Environment,
+    state::{State, StateKey},
 };
 
 /// The result of a successful [`Effect::apply`] call.
@@ -119,6 +122,7 @@ pub trait Effect<E: Environment + Sync>: StateKey {
     /// but requires the framework to requeue.
     async fn apply(
         &self,
+        cx: &ReconcileContext,
         env: &E,
         state: &State,
     ) -> Result<EffectOutcome<<Self as StateKey>::Value>, Self::Error>;
@@ -133,7 +137,8 @@ pub trait Effect<E: Environment + Sync>: StateKey {
     ///
     /// The default returns [`CleanupAction::Skip`], indicating that no
     /// explicit teardown is needed.
-    async fn cleanup(&self, env: &E) -> Result<CleanupAction, Self::Error> {
+    async fn cleanup(&self, cx: &ReconcileContext, env: &E) -> Result<CleanupAction, Self::Error> {
+        let _ = cx;
         let _ = env;
         Ok(CleanupAction::Skip)
     }

@@ -17,24 +17,22 @@
 //! ```ignore
 //! struct WaitForDatabaseReady {
 //!     name: String,
-//!     namespace: String,
-//!     cx: ConditionContext,
 //! }
 //!
 //! #[async_trait]
 //! impl Poll<E> for WaitForDatabaseReady {
 //!     type Error = MyError;
 //!
-//!     async fn check(&self, env: &E) -> Result<PollState, Self::Error> {
-//!         let db = env.get::<Database>(&ObjectRef::new(&self.namespace, &self.name)).await?;
+//!     async fn check(&self, cx: &ReconcileContext, env: &E) -> Result<PollState, Self::Error> {
+//!         let db = env.get::<Database>(&ObjectRef::new(&cx.object.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if has_ready_condition(&db) => Ok(PollState::Done),
 //!             Some(_) => Ok(PollState::Pending {
-//!                 condition: self.cx.not_ready_condition("DatabasePending", "waiting"),
+//!                 condition: cx.condition.not_ready_condition("DatabasePending", "waiting"),
 //!                 backoff: Box::new(Fixed::new(Duration::from_secs(15))),
 //!             }),
 //!             None => Ok(PollState::Failed {
-//!                 condition: self.cx.not_ready_condition("DatabaseMissing", "not found"),
+//!                 condition: cx.condition.not_ready_condition("DatabaseMissing", "not found"),
 //!                 backoff: Box::new(Fixed::new(Duration::from_secs(30))),
 //!             }),
 //!         }
@@ -45,7 +43,7 @@
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
-use crate::{backoff::Backoff, environment::Environment};
+use crate::{ReconcileContext, backoff::Backoff, environment::Environment};
 
 /// The result of a poll check.
 pub enum PollState {
@@ -81,5 +79,5 @@ pub trait Poll<E: Environment + Sync> {
     type Error;
 
     /// Observe the current state and return whether convergence has been reached.
-    async fn check(&self, env: &E) -> Result<PollState, Self::Error>;
+    async fn check(&self, cx: &ReconcileContext, env: &E) -> Result<PollState, Self::Error>;
 }

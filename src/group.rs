@@ -54,7 +54,7 @@ use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
 use crate::{
-    ReconcilerError,
+    ReconcileContext, ReconcilerError,
     backoff::Backoff,
     cleanup::CleanupAction,
     effect::{Effect, EffectOutcome},
@@ -76,8 +76,17 @@ enum SubStepResult {
 /// group's internal state bag. Only effects carry cleanup obligations.
 #[async_trait]
 trait SubStep<E: Environment + Sync>: Send + Sync {
-    async fn run(&self, env: &E, state: &mut State) -> Result<SubStepResult, ReconcilerError>;
-    async fn cleanup(&self, env: &E) -> Result<CleanupAction, ReconcilerError>;
+    async fn run(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+        state: &mut State,
+    ) -> Result<SubStepResult, ReconcilerError>;
+    async fn cleanup(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+    ) -> Result<CleanupAction, ReconcilerError>;
 }
 
 struct SubGateStep<G> {
@@ -92,8 +101,13 @@ where
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
-    async fn run(&self, env: &E, state: &mut State) -> Result<SubStepResult, ReconcilerError> {
-        match self.gate.evaluate(env).await {
+    async fn run(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+        state: &mut State,
+    ) -> Result<SubStepResult, ReconcilerError> {
+        match self.gate.evaluate(cx, env).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<G>(v);
                 Ok(SubStepResult::Continue)
@@ -105,7 +119,11 @@ where
         }
     }
 
-    async fn cleanup(&self, _env: &E) -> Result<CleanupAction, ReconcilerError> {
+    async fn cleanup(
+        &self,
+        _cx: &ReconcileContext,
+        _env: &E,
+    ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
     }
 }
@@ -122,8 +140,13 @@ where
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
-    async fn run(&self, env: &E, state: &mut State) -> Result<SubStepResult, ReconcilerError> {
-        match self.effect.apply(env, state).await {
+    async fn run(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+        state: &mut State,
+    ) -> Result<SubStepResult, ReconcilerError> {
+        match self.effect.apply(cx, env, state).await {
             Ok(EffectOutcome::Done(v)) => {
                 state.insert::<F>(v);
                 Ok(SubStepResult::Continue)
@@ -135,8 +158,12 @@ where
         }
     }
 
-    async fn cleanup(&self, env: &E) -> Result<CleanupAction, ReconcilerError> {
-        self.effect.cleanup(env).await.map_err(Into::into)
+    async fn cleanup(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+    ) -> Result<CleanupAction, ReconcilerError> {
+        self.effect.cleanup(cx, env).await.map_err(Into::into)
     }
 }
 
@@ -151,8 +178,13 @@ where
     P: Poll<E> + Send + Sync,
     P::Error: Into<ReconcilerError>,
 {
-    async fn run(&self, env: &E, _state: &mut State) -> Result<SubStepResult, ReconcilerError> {
-        match self.poll.check(env).await {
+    async fn run(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+        _state: &mut State,
+    ) -> Result<SubStepResult, ReconcilerError> {
+        match self.poll.check(cx, env).await {
             Ok(PollState::Done) => Ok(SubStepResult::Continue),
             Ok(
                 PollState::Pending { condition, backoff }
@@ -162,7 +194,11 @@ where
         }
     }
 
-    async fn cleanup(&self, _env: &E) -> Result<CleanupAction, ReconcilerError> {
+    async fn cleanup(
+        &self,
+        _cx: &ReconcileContext,
+        _env: &E,
+    ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
     }
 }
@@ -276,13 +312,14 @@ where
 
     async fn apply(
         &self,
+        cx: &ReconcileContext,
         env: &E,
         _outer_state: &State,
     ) -> Result<EffectOutcome<V>, ReconcilerError> {
         let mut scoped_state = State::new();
 
         for step in &self.steps {
-            match step.run(env, &mut scoped_state).await? {
+            match step.run(cx, env, &mut scoped_state).await? {
                 SubStepResult::Continue => continue,
                 SubStepResult::Wait { condition, backoff } => {
                     return Ok(EffectOutcome::Retry { condition, backoff });
@@ -303,9 +340,13 @@ where
         Ok(EffectOutcome::Done(output))
     }
 
-    async fn cleanup(&self, env: &E) -> Result<CleanupAction, ReconcilerError> {
+    async fn cleanup(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+    ) -> Result<CleanupAction, ReconcilerError> {
         for step in self.steps.iter().rev() {
-            match step.cleanup(env).await? {
+            match step.cleanup(cx, env).await? {
                 CleanupAction::Skip | CleanupAction::Done => continue,
                 CleanupAction::Retry(backoff) => return Ok(CleanupAction::Retry(backoff)),
             }

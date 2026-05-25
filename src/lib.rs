@@ -79,14 +79,19 @@ pub mod poll;
 
 pub mod group;
 pub mod reconcile;
+pub mod status;
 
 #[cfg(feature = "test-support")]
 pub mod testing;
 
 pub use async_trait::async_trait;
 
-use crate::environment::EnvironmentError;
 pub use crate::environment::RealEnvironment;
+use crate::{
+    environment::{EnvironmentError, ObjectRef},
+    utils::ConditionContext,
+};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
 /// Top-level error returned by individual pipeline steps (gates, effects, polls).
 ///
@@ -108,4 +113,26 @@ pub enum ReconcilerError {
     /// mis-ordered or the upstream step did not run.
     #[error("desired-state input not satisfied: {0}")]
     MissingInput(String),
+}
+
+/// Trait for resources that expose status conditions.
+///
+/// Implement this on your CRD type to allow the reconcile framework
+/// to extract the current conditions automatically. The implementation
+/// is always the same pattern:
+///
+/// ```ignore
+/// impl HasConditions for MyResource {
+///     fn conditions(&self) -> Vec<Condition> {
+///         self.status.as_ref().map(|s| s.conditions.clone()).unwrap_or_default()
+///     }
+/// }
+/// ```
+pub trait HasConditions {
+    fn conditions(&self) -> Vec<Condition>;
+}
+
+pub struct ReconcileContext<'a> {
+    pub object: &'a ObjectRef,
+    pub condition: &'a ConditionContext,
 }

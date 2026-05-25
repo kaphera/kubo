@@ -12,7 +12,7 @@ use std::sync::{
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use k8s_operator_reconciler::{
-    ReconcilerError,
+    ReconcileContext, ReconcilerError,
     backoff::fixed::Fixed,
     cleanup::CleanupAction,
     effect::{Effect, EffectOutcome},
@@ -47,11 +47,20 @@ pub struct VaultKvMountSpec {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct VaultKvMountStatus {
-    pub observed_generation: Option<i64>,
-    pub conditions: Vec<Condition>,
+pub struct VaultKvMountFields {
     pub mount_path: Option<String>,
     pub resolved_instance_ref: Option<String>,
+}
+
+pub type VaultKvMountStatus = k8s_operator_reconciler::status::ResourceStatus<VaultKvMountFields>;
+
+impl k8s_operator_reconciler::HasConditions for VaultKvMount {
+    fn conditions(&self) -> Vec<Condition> {
+        self.status
+            .as_ref()
+            .map(|s| s.conditions.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -97,8 +106,6 @@ impl From<VaultKvMountError> for ReconcilerError {
 
 struct ResolveVaultInstance {
     instance_ref: String,
-    namespace: String,
-    cx: ConditionContext,
 }
 
 impl StateKey for ResolveVaultInstance {
@@ -109,13 +116,17 @@ impl StateKey for ResolveVaultInstance {
 impl<E: Environment + Sync> Gate<E> for ResolveVaultInstance {
     type Error = VaultKvMountError;
 
-    async fn evaluate(&self, env: &E) -> Result<Outcome<String>, Self::Error> {
-        let r = ObjectRef::new(&self.namespace, &self.instance_ref);
+    async fn evaluate(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+    ) -> Result<Outcome<String>, Self::Error> {
+        let r = ObjectRef::new(&cx.object.namespace, &self.instance_ref);
         let instance: Option<VaultInstance> = env.get(&r).await?;
 
         match instance {
             None => Ok(Outcome::Wait {
-                condition: self.cx.not_ready_condition(
+                condition: cx.condition.not_ready_condition(
                     "WaitingForInstance",
                     &format!("VaultInstance {} not found", self.instance_ref),
                 ),
@@ -127,7 +138,7 @@ impl<E: Environment + Sync> Gate<E> for ResolveVaultInstance {
                 match address {
                     Some(addr) => Ok(Outcome::Pass(addr)),
                     None => Ok(Outcome::Wait {
-                        condition: self.cx.not_ready_condition(
+                        condition: cx.condition.not_ready_condition(
                             "WaitingForInstance",
                             "VaultInstance is not yet ready",
                         ),
@@ -144,8 +155,6 @@ impl<E: Environment + Sync> Gate<E> for ResolveVaultInstance {
 // ═══════════════════════════════════════════════════════════════════════
 
 struct EnableKv2Mount {
-    namespace: String,
-    name: String,
     /// Simulates whether the Vault API call succeeds.
     vault_available: Arc<AtomicBool>,
     /// Tracks whether cleanup was called (for test assertion).
@@ -160,14 +169,19 @@ impl StateKey for EnableKv2Mount {
 impl<E: Environment + Sync> Effect<E> for EnableKv2Mount {
     type Error = VaultKvMountError;
 
-    async fn apply(&self, _env: &E, _state: &State) -> Result<EffectOutcome<String>, Self::Error> {
+    async fn apply(
+        &self,
+        cx: &ReconcileContext,
+        _env: &E,
+        _state: &State,
+    ) -> Result<EffectOutcome<String>, Self::Error> {
         if !self.vault_available.load(Ordering::Relaxed) {
             return Err(VaultKvMountError::Vault(
                 "Vault API unavailable".to_string(),
             ));
         }
 
-        let mount_path = format!("{}/{}/kv", self.namespace, self.name);
+        let mount_path = format!("{}/{}/kv", cx.object.namespace, cx.object.name);
 
         // In real code: vault_client.enable_kv2_mount(&mount_path).await?;
         // In real code: vault_client.put_policy(&policy_name, &rules).await?;
@@ -175,7 +189,11 @@ impl<E: Environment + Sync> Effect<E> for EnableKv2Mount {
         Ok(EffectOutcome::Done(mount_path))
     }
 
-    async fn cleanup(&self, _env: &E) -> Result<CleanupAction, Self::Error> {
+    async fn cleanup(
+        &self,
+        _cx: &ReconcileContext,
+        _env: &E,
+    ) -> Result<CleanupAction, Self::Error> {
         if !self.vault_available.load(Ordering::Relaxed) {
             return Ok(CleanupAction::Retry(Box::new(Fixed::new(
                 std::time::Duration::from_secs(15),
@@ -195,7 +213,6 @@ impl<E: Environment + Sync> Effect<E> for EnableKv2Mount {
 // ═══════════════════════════════════════════════════════════════════════
 
 struct CreateAccessSecret {
-    namespace: String,
     secret_name: String,
     /// Tracks whether cleanup was called (for test assertion).
     cleaned_up: Arc<AtomicBool>,
@@ -209,27 +226,29 @@ impl StateKey for CreateAccessSecret {
 impl<E: Environment + Sync> Effect<E> for CreateAccessSecret {
     type Error = VaultKvMountError;
 
-    async fn apply(&self, env: &E, state: &State) -> Result<EffectOutcome<()>, Self::Error> {
+    async fn apply(
+        &self,
+        cx: &ReconcileContext,
+        _env: &E,
+        state: &State,
+    ) -> Result<EffectOutcome<()>, Self::Error> {
         let mount_path = state
             .require::<EnableKv2Mount>()
             .map_err(|e| VaultKvMountError::Vault(e.to_string()))?;
 
         // In real code: create scoped token, build Secret, SSA patch.
-        // Here we simulate by applying a ConfigMap-like object (Secret
-        // is namespaced and satisfies EnvResource).
         let _mount_path = mount_path.clone();
         let _secret_name = &self.secret_name;
-        let _namespace = &self.namespace;
-
-        // Simulate: apply the secret to K8s via env.
-        // env.apply::<Secret>(&self.namespace, desired_secret).await?;
-        let _ = env;
+        let _namespace = &cx.object.namespace;
 
         Ok(EffectOutcome::Done(()))
     }
 
-    async fn cleanup(&self, _env: &E) -> Result<CleanupAction, Self::Error> {
-        // In real code: env.delete::<Secret>(&ObjectRef::new(&self.namespace, &self.secret_name)).await?;
+    async fn cleanup(
+        &self,
+        _cx: &ReconcileContext,
+        _env: &E,
+    ) -> Result<CleanupAction, Self::Error> {
         self.cleaned_up.store(true, Ordering::Relaxed);
         Ok(CleanupAction::Done)
     }
@@ -241,19 +260,18 @@ impl<E: Environment + Sync> Effect<E> for CreateAccessSecret {
 
 struct WaitForMountReady {
     ready: Arc<AtomicBool>,
-    cx: ConditionContext,
 }
 
 #[async_trait]
 impl<E: Environment + Sync> Poll<E> for WaitForMountReady {
     type Error = VaultKvMountError;
 
-    async fn check(&self, _env: &E) -> Result<PollState, Self::Error> {
+    async fn check(&self, cx: &ReconcileContext, _env: &E) -> Result<PollState, Self::Error> {
         if self.ready.load(Ordering::Relaxed) {
             Ok(PollState::Done)
         } else {
             Ok(PollState::Pending {
-                condition: self.cx.not_ready_condition(
+                condition: cx.condition.not_ready_condition(
                     "MountNotReady",
                     "Waiting for KV-v2 mount to become accessible",
                 ),
@@ -274,18 +292,11 @@ fn pipeline_composes_with_typed_state() {
     // This is a compile-time validation: if the types don't compose,
     // this won't build. The runtime part validates state flow.
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation)
-        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     let vault_available = Arc::new(AtomicBool::new(true));
     let mount_ready = Arc::new(AtomicBool::new(true));
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let namespace = "test-ns".to_string();
-    let name = "my-kvm".to_string();
     let instance_ref = "my-vault".to_string();
 
     // Seed VaultInstance with a ready address.
@@ -305,33 +316,26 @@ fn pipeline_composes_with_typed_state() {
 
     // Build the reconcile pipeline — validates type composition.
     let obj = make_kvm("test-ns", "my-kvm", false);
-    let _reconcile = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let _reconcile = Reconcile::new(&env, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: instance_ref.clone(),
-            namespace: namespace.clone(),
-            cx: ConditionContext::new(generation),
         })
         .effect(EnableKv2Mount {
-            namespace: namespace.clone(),
-            name: name.clone(),
             vault_available: vault_available.clone(),
             cleaned_up: effect1_cleaned.clone(),
         })
         .effect(CreateAccessSecret {
-            namespace: namespace.clone(),
             secret_name: "my-kvm-access".to_string(),
             cleaned_up: effect2_cleaned.clone(),
         })
         .poll(WaitForMountReady {
             ready: mount_ready.clone(),
-            cx: ConditionContext::new(generation),
         });
 
     // The status closure compiles with typed state access:
-    let _status_fn = |conds: &[Condition], state: &State| -> VaultKvMountStatus {
-        VaultKvMountStatus {
-            observed_generation: Some(generation),
-            conditions: conds.to_vec(),
+    let _status_fn = |state: &State, _prev: &VaultKvMountFields| -> VaultKvMountFields {
+        VaultKvMountFields {
             mount_path: state.get::<EnableKv2Mount>().cloned(),
             resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
         }
@@ -366,15 +370,18 @@ fn typed_state_prevents_wrong_type() {
 #[tokio::test]
 async fn gate_waits_when_instance_missing() {
     let env = TestEnvironment::new();
-    let cx = ConditionContext::new(1);
 
     let gate = ResolveVaultInstance {
         instance_ref: "missing-vault".to_string(),
-        namespace: "test-ns".to_string(),
-        cx,
     };
 
-    let result = gate.evaluate(&env).await.unwrap();
+    let obj_ref = ObjectRef::new("test-ns", "missing-vault");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = gate.evaluate(&rcx, &env).await.unwrap();
     assert!(!result.is_pass());
 }
 
@@ -382,7 +389,6 @@ async fn gate_waits_when_instance_missing() {
 #[tokio::test]
 async fn gate_passes_when_instance_ready() {
     let env = TestEnvironment::new();
-    let cx = ConditionContext::new(1);
 
     let mut vi = VaultInstance::new("my-vault", VaultInstanceSpec { replicas: 1 });
     vi.metadata.namespace = Some("test-ns".to_string());
@@ -400,11 +406,15 @@ async fn gate_passes_when_instance_ready() {
 
     let gate = ResolveVaultInstance {
         instance_ref: "my-vault".to_string(),
-        namespace: "test-ns".to_string(),
-        cx,
     };
 
-    let result = gate.evaluate(&env).await.unwrap();
+    let obj_ref = ObjectRef::new("test-ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = gate.evaluate(&rcx, &env).await.unwrap();
     assert!(result.is_pass());
 }
 
@@ -417,13 +427,17 @@ async fn effect_writes_to_typed_state() {
     let state = State::new();
 
     let effect = EnableKv2Mount {
-        namespace: "ns".to_string(),
-        name: "my-kvm".to_string(),
         vault_available,
         cleaned_up,
     };
 
-    let outcome = effect.apply(&env, &state).await.unwrap();
+    let obj_ref = ObjectRef::new("ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let outcome = effect.apply(&rcx, &env, &state).await.unwrap();
 
     // Verify the returned value (framework inserts it into state).
     match outcome {
@@ -441,13 +455,17 @@ async fn effect_errors_when_vault_down() {
     let state = State::new();
 
     let effect = EnableKv2Mount {
-        namespace: "ns".to_string(),
-        name: "my-kvm".to_string(),
         vault_available,
         cleaned_up,
     };
 
-    let result = effect.apply(&env, &state).await;
+    let obj_ref = ObjectRef::new("ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = effect.apply(&rcx, &env, &state).await;
     assert!(result.is_err());
 }
 
@@ -459,13 +477,17 @@ async fn cleanup_retries_when_vault_down() {
     let cleaned_up = Arc::new(AtomicBool::new(false));
 
     let effect = EnableKv2Mount {
-        namespace: "ns".to_string(),
-        name: "my-kvm".to_string(),
         vault_available,
         cleaned_up: cleaned_up.clone(),
     };
 
-    let result = effect.cleanup(&env).await.unwrap();
+    let obj_ref = ObjectRef::new("ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = effect.cleanup(&rcx, &env).await.unwrap();
     assert!(matches!(result, CleanupAction::Retry(_)));
     assert!(!cleaned_up.load(Ordering::Relaxed));
 }
@@ -478,13 +500,17 @@ async fn cleanup_succeeds_when_vault_available() {
     let cleaned_up = Arc::new(AtomicBool::new(false));
 
     let effect = EnableKv2Mount {
-        namespace: "ns".to_string(),
-        name: "my-kvm".to_string(),
         vault_available,
         cleaned_up: cleaned_up.clone(),
     };
 
-    let result = effect.cleanup(&env).await.unwrap();
+    let obj_ref = ObjectRef::new("ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = effect.cleanup(&rcx, &env).await.unwrap();
     assert!(matches!(result, CleanupAction::Done));
     assert!(cleaned_up.load(Ordering::Relaxed));
 }
@@ -500,12 +526,17 @@ async fn effect_chain_reads_state_from_prior() {
 
     // Second effect reads it:
     let effect = CreateAccessSecret {
-        namespace: "test-ns".to_string(),
         secret_name: "my-kvm-access".to_string(),
         cleaned_up: Arc::new(AtomicBool::new(false)),
     };
 
-    let result = effect.apply(&env, &state).await;
+    let obj_ref = ObjectRef::new("test-ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = effect.apply(&rcx, &env, &state).await;
     assert!(result.is_ok());
 }
 
@@ -516,41 +547,42 @@ async fn effect_fails_without_prior_state() {
     let state = State::new(); // Empty — no EnableKv2Mount inserted.
 
     let effect = CreateAccessSecret {
-        namespace: "test-ns".to_string(),
         secret_name: "my-kvm-access".to_string(),
         cleaned_up: Arc::new(AtomicBool::new(false)),
     };
 
-    let result = effect.apply(&env, &state).await;
+    let obj_ref = ObjectRef::new("test-ns", "my-kvm");
+    let cond_cx = ConditionContext::new(1);
+    let rcx = ReconcileContext {
+        object: &obj_ref,
+        condition: &cond_cx,
+    };
+    let result = effect.apply(&rcx, &env, &state).await;
     assert!(result.is_err());
 }
 
 /// Validates status closure uses PartialEq for skip-patch semantics.
 #[test]
 fn status_eq_enables_skip_patch() {
-    let s1 = VaultKvMountStatus {
-        observed_generation: Some(1),
-        conditions: vec![],
+    let s1 = VaultKvMountFields {
         mount_path: Some("ns/name/kv".to_string()),
         resolved_instance_ref: Some("http://vault:8200".to_string()),
     };
 
-    let s2 = VaultKvMountStatus {
-        observed_generation: Some(1),
-        conditions: vec![],
+    let s2 = VaultKvMountFields {
         mount_path: Some("ns/name/kv".to_string()),
         resolved_instance_ref: Some("http://vault:8200".to_string()),
     };
 
-    // Same status → skip patch.
+    // Same fields → skip patch.
     assert_eq!(s1, s2);
 
-    let s3 = VaultKvMountStatus {
-        observed_generation: Some(2),
+    let s3 = VaultKvMountFields {
+        mount_path: None,
         ..s1.clone()
     };
 
-    // Different generation → patch.
+    // Different mount_path → patch.
     assert_ne!(s1, s3);
 }
 
@@ -582,11 +614,6 @@ fn make_kvm(namespace: &str, name: &str, deleting: bool) -> Arc<VaultKvMount> {
 #[tokio::test]
 async fn run_apply_full_pipeline() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation)
-        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     // Seed the VaultKvMount object (so patch_finalizers can find it).
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
@@ -610,28 +637,24 @@ async fn run_apply_full_pipeline() {
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let action = Reconcile::new(&env, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(EnableKv2Mount {
-            namespace: "test-ns".to_string(),
-            name: "my-kvm".to_string(),
             vault_available: vault_available.clone(),
             cleaned_up: effect1_cleaned.clone(),
         })
         .effect(CreateAccessSecret {
-            namespace: "test-ns".to_string(),
             secret_name: "access-secret".to_string(),
             cleaned_up: effect2_cleaned.clone(),
         })
-        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
-            observed_generation: Some(generation),
-            conditions: conds.to_vec(),
-            mount_path: state.get::<EnableKv2Mount>().cloned(),
-            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+        .run("test-finalizer", |state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
+                mount_path: state.get::<EnableKv2Mount>().cloned(),
+                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+            }
         })
         .await
         .unwrap();
@@ -647,11 +670,11 @@ async fn run_apply_full_pipeline() {
         .unwrap();
     let status_value = stored.status.expect("status should be patched");
     assert_eq!(
-        status_value.mount_path,
+        status_value.resource.mount_path,
         Some("test-ns/my-kvm/kv".to_string())
     );
     assert_eq!(
-        status_value.resolved_instance_ref,
+        status_value.resource.resolved_instance_ref,
         Some("http://vault:8200".to_string())
     );
 
@@ -664,10 +687,6 @@ async fn run_apply_full_pipeline() {
 #[tokio::test]
 async fn run_cleanup_removes_finalizer() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation);
-    let mut conditions: Vec<Condition> = Vec::new();
-
     // Seed the VaultKvMount object as deleting (has deletion_timestamp + finalizer).
     let obj = make_kvm("test-ns", "my-kvm", true);
     env.seed((*obj).clone());
@@ -676,22 +695,17 @@ async fn run_cleanup_removes_finalizer() {
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let action = Reconcile::new(&env, obj.clone())
         .effect(EnableKv2Mount {
-            namespace: "test-ns".to_string(),
-            name: "my-kvm".to_string(),
             vault_available: vault_available.clone(),
             cleaned_up: effect1_cleaned.clone(),
         })
         .effect(CreateAccessSecret {
-            namespace: "test-ns".to_string(),
             secret_name: "access-secret".to_string(),
             cleaned_up: effect2_cleaned.clone(),
         })
-        .run("test-finalizer", |conds, _state, _prev| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
+        .run("test-finalizer", |_state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
                 mount_path: None,
                 resolved_instance_ref: None,
             }
@@ -721,31 +735,23 @@ async fn run_cleanup_removes_finalizer() {
 #[tokio::test]
 async fn run_apply_gate_waits() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation);
-    let mut conditions: Vec<Condition> = Vec::new();
-
     // Seed the VaultKvMount object (no VaultInstance seeded — gate will wait).
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
 
-    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let action = Reconcile::new(&env, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(EnableKv2Mount {
-            namespace: "test-ns".to_string(),
-            name: "my-kvm".to_string(),
             vault_available: Arc::new(AtomicBool::new(true)),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
-            observed_generation: Some(generation),
-            conditions: conds.to_vec(),
-            mount_path: state.get::<EnableKv2Mount>().cloned(),
-            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+        .run("test-finalizer", |state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
+                mount_path: state.get::<EnableKv2Mount>().cloned(),
+                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+            }
         })
         .await
         .unwrap();
@@ -767,7 +773,7 @@ async fn run_apply_gate_waits() {
             .any(|c| c.reason == "WaitingForInstance")
     );
     // mount_path should NOT be set (effect didn't run).
-    assert_eq!(status.mount_path, None);
+    assert_eq!(status.resource.mount_path, None);
 }
 
 /// Validates that status is patched after each step (on-tick), and
@@ -775,11 +781,6 @@ async fn run_apply_gate_waits() {
 #[tokio::test]
 async fn run_apply_patches_status_on_tick() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation)
-        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     // Seed the VaultKvMount object.
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
@@ -801,28 +802,24 @@ async fn run_apply_patches_status_on_tick() {
 
     let vault_available = Arc::new(AtomicBool::new(true));
 
-    let action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let action = Reconcile::new(&env, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(EnableKv2Mount {
-            namespace: "test-ns".to_string(),
-            name: "my-kvm".to_string(),
             vault_available: vault_available.clone(),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
         .effect(CreateAccessSecret {
-            namespace: "test-ns".to_string(),
             secret_name: "access-secret".to_string(),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
-            observed_generation: Some(generation),
-            conditions: conds.to_vec(),
-            mount_path: state.get::<EnableKv2Mount>().cloned(),
-            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+        .run("test-finalizer", |state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
+                mount_path: state.get::<EnableKv2Mount>().cloned(),
+                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+            }
         })
         .await
         .unwrap();
@@ -839,11 +836,14 @@ async fn run_apply_patches_status_on_tick() {
 
     // Gate output should be in status (resolved after gate step).
     assert_eq!(
-        status.resolved_instance_ref,
+        status.resource.resolved_instance_ref,
         Some("http://vault:8200".to_string())
     );
     // Effect output should be in status (resolved after effect step).
-    assert_eq!(status.mount_path, Some("test-ns/my-kvm/kv".to_string()));
+    assert_eq!(
+        status.resource.mount_path,
+        Some("test-ns/my-kvm/kv".to_string())
+    );
     // Ready condition should be present (set after all steps pass).
     assert!(
         status
@@ -868,10 +868,6 @@ async fn run_apply_skips_redundant_patches() {
     // the closure ignores state entirely), only one patch should occur.
 
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation).with_ready_reason("Ready", "done");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
 
@@ -899,28 +895,26 @@ async fn run_apply_skips_redundant_patches() {
     // struct (except conditions change when Ready is set at the end).
     // Between gate and effects, conditions don't change, so the
     // closure output should be identical → skip patch.
-    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let _action = Reconcile::new(&env, obj.clone())
+        .ready_reason("Ready", "done")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(EnableKv2Mount {
-            namespace: "test-ns".to_string(),
-            name: "my-kvm".to_string(),
             vault_available: Arc::new(AtomicBool::new(true)),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", move |conds, _state, _prev| {
-            // Count each unique call.
-            patch_count_clone.fetch_add(1, Ordering::Relaxed);
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
-                mount_path: None, // Deliberately ignore state.
-                resolved_instance_ref: None,
-            }
-        })
+        .run(
+            "test-finalizer",
+            move |_state, _prev: &VaultKvMountFields| {
+                // Count each unique call.
+                patch_count_clone.fetch_add(1, Ordering::Relaxed);
+                VaultKvMountFields {
+                    mount_path: None, // Deliberately ignore state.
+                    resolved_instance_ref: None,
+                }
+            },
+        )
         .await
         .unwrap();
 
@@ -939,7 +933,7 @@ async fn run_apply_skips_redundant_patches() {
         .unwrap()
         .unwrap();
     let status = stored.status.expect("status should be patched");
-    assert_eq!(status.mount_path, None);
+    assert_eq!(status.resource.mount_path, None);
     assert!(
         status
             .conditions
@@ -958,11 +952,6 @@ async fn run_apply_skips_redundant_patches() {
 #[tokio::test]
 async fn status_ticks_show_causal_progression() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation)
-        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
 
@@ -980,28 +969,24 @@ async fn status_ticks_show_causal_progression() {
     })
     .unwrap();
 
-    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let _action = Reconcile::new(&env, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(EnableKv2Mount {
-            namespace: "test-ns".to_string(),
-            name: "my-kvm".to_string(),
             vault_available: Arc::new(AtomicBool::new(true)),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
         .effect(CreateAccessSecret {
-            namespace: "test-ns".to_string(),
             secret_name: "access-secret".to_string(),
             cleaned_up: Arc::new(AtomicBool::new(false)),
         })
-        .run("test-finalizer", |conds, state, _prev| VaultKvMountStatus {
-            observed_generation: Some(generation),
-            conditions: conds.to_vec(),
-            mount_path: state.get::<EnableKv2Mount>().cloned(),
-            resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+        .run("test-finalizer", |state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
+                mount_path: state.get::<EnableKv2Mount>().cloned(),
+                resolved_instance_ref: state.get::<ResolveVaultInstance>().cloned(),
+            }
         })
         .await
         .unwrap();
@@ -1014,25 +999,25 @@ async fn status_ticks_show_causal_progression() {
     // Property: resolved_instance_ref is monotonic (once set, never unset).
     assert_monotonic(
         &ticks,
-        |s| s.resolved_instance_ref.is_some(),
+        |s| s.resource.resolved_instance_ref.is_some(),
         "resolved_instance_ref",
     );
 
     // Property: mount_path is monotonic.
-    assert_monotonic(&ticks, |s| s.mount_path.is_some(), "mount_path");
+    assert_monotonic(&ticks, |s| s.resource.mount_path.is_some(), "mount_path");
 
     // Property: mount_path never appears without resolved_instance_ref (causal).
     assert_causal(
         &ticks,
-        |s| s.resolved_instance_ref.is_some(),
-        |s| s.mount_path.is_some(),
+        |s| s.resource.resolved_instance_ref.is_some(),
+        |s| s.resource.mount_path.is_some(),
         "gate must resolve before effect writes mount",
     );
 
     // Property: illegal state never occurs.
     assert_never(
         &ticks,
-        |s| s.mount_path.is_some() && s.resolved_instance_ref.is_none(),
+        |s| s.resource.mount_path.is_some() && s.resource.resolved_instance_ref.is_none(),
         "orphan mount_path without resolved instance",
     );
 
@@ -1050,8 +1035,8 @@ async fn status_ticks_show_causal_progression() {
     // Property: resolved_instance_ref appears strictly before mount_path.
     assert_ordered(
         &ticks,
-        |s| s.resolved_instance_ref.is_some(),
-        |s| s.mount_path.is_some(),
+        |s| s.resource.resolved_instance_ref.is_some(),
+        |s| s.resource.mount_path.is_some(),
         "resolve before mount",
     );
 }
@@ -1069,11 +1054,6 @@ use std::collections::BTreeMap;
 #[tokio::test]
 async fn rotation_annotation_triggers_state_and_is_removed() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation)
-        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     // Build object with the rotation annotation present.
     let mut kvm = VaultKvMount::new(
         "my-kvm",
@@ -1122,7 +1102,12 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
     impl<E: Environment + Sync> Effect<E> for CheckRotationEffect {
         type Error = VaultKvMountError;
 
-        async fn apply(&self, _env: &E, state: &State) -> Result<EffectOutcome<()>, Self::Error> {
+        async fn apply(
+            &self,
+            _cx: &ReconcileContext,
+            _env: &E,
+            state: &State,
+        ) -> Result<EffectOutcome<()>, Self::Error> {
             if state.contains::<RotationRequested>() {
                 self.saw_rotation.store(true, Ordering::Relaxed);
             }
@@ -1130,20 +1115,17 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
         }
     }
 
-    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let _action = Reconcile::new(&env, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .rotation_annotation("test.kaphera.cloud/rotate-requested")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(CheckRotationEffect {
             saw_rotation: saw_rotation_clone,
         })
-        .run("test-finalizer", |conds, _state, _prev| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
+        .run("test-finalizer", |_state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
                 mount_path: None,
                 resolved_instance_ref: None,
             }
@@ -1175,11 +1157,6 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
 #[tokio::test]
 async fn no_rotation_when_annotation_absent() {
     let env = TestEnvironment::new();
-    let generation = 1i64;
-    let cx = ConditionContext::new(generation)
-        .with_ready_reason("MountReady", "KV-v2 mount is provisioned");
-    let mut conditions: Vec<Condition> = Vec::new();
-
     // Build object WITHOUT the rotation annotation.
     let obj = make_kvm("test-ns", "my-kvm", false);
     env.seed((*obj).clone());
@@ -1214,7 +1191,12 @@ async fn no_rotation_when_annotation_absent() {
     impl<E: Environment + Sync> Effect<E> for CheckRotationEffect2 {
         type Error = VaultKvMountError;
 
-        async fn apply(&self, _env: &E, state: &State) -> Result<EffectOutcome<()>, Self::Error> {
+        async fn apply(
+            &self,
+            _cx: &ReconcileContext,
+            _env: &E,
+            state: &State,
+        ) -> Result<EffectOutcome<()>, Self::Error> {
             if state.contains::<RotationRequested>() {
                 self.saw_rotation.store(true, Ordering::Relaxed);
             }
@@ -1222,20 +1204,17 @@ async fn no_rotation_when_annotation_absent() {
         }
     }
 
-    let _action = Reconcile::new(&env, &cx, &mut conditions, obj.clone())
+    let _action = Reconcile::new(&env, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .rotation_annotation("test.kaphera.cloud/rotate-requested")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
-            namespace: "test-ns".to_string(),
-            cx: ConditionContext::new(generation),
         })
         .effect(CheckRotationEffect2 {
             saw_rotation: saw_rotation_clone,
         })
-        .run("test-finalizer", |conds, _state, _prev| {
-            VaultKvMountStatus {
-                observed_generation: Some(generation),
-                conditions: conds.to_vec(),
+        .run("test-finalizer", |_state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
                 mount_path: None,
                 resolved_instance_ref: None,
             }

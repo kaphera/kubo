@@ -45,7 +45,7 @@
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
-use crate::{backoff::Backoff, environment::Environment, state::StateKey};
+use crate::{ReconcileContext, backoff::Backoff, environment::Environment, state::StateKey};
 
 /// A read-only dependency check that either passes (producing a value) or
 /// waits (producing a condition for status and a backoff for requeue timing).
@@ -65,7 +65,11 @@ pub trait Gate<E: Environment + Sync>: StateKey {
     /// Return `Outcome::Pass(value)` when the dependency is satisfied, or
     /// `Outcome::Wait { condition, backoff }` when it is not yet ready.
     /// Returning `Err` signals a hard failure that aborts the reconcile pass.
-    async fn evaluate(&self, env: &E) -> Result<Outcome<<Self as StateKey>::Value>, Self::Error>;
+    async fn evaluate(
+        &self,
+        cx: &ReconcileContext,
+        env: &E,
+    ) -> Result<Outcome<<Self as StateKey>::Value>, Self::Error>;
 }
 
 /// The result of a gate evaluation.
