@@ -236,6 +236,18 @@ impl Environment for TestEnvironment {
         Ok(out)
     }
 
+    async fn list_all<T: EnvResource>(&self) -> Result<Vec<T>, EnvironmentError> {
+        let kind = T::kind(&()).to_string();
+        let store = self.store.lock().unwrap();
+        let mut out = Vec::new();
+        for ((k, _), row) in store.rows.iter() {
+            if k == &kind {
+                out.push(serde_json::from_value(row.body.clone())?);
+            }
+        }
+        Ok(out)
+    }
+
     async fn apply<T: EnvResource>(&self, namespace: &str, obj: T) -> Result<(), EnvironmentError> {
         let name = obj
             .meta()

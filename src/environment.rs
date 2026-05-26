@@ -118,6 +118,9 @@ pub trait Environment: Send + Sync {
     /// List all resources of type `T` in the given namespace.
     async fn list<T: EnvResource>(&self, namespace: &str) -> Result<Vec<T>, EnvironmentError>;
 
+    /// List all resources of type `T` across all namespaces.
+    async fn list_all<T: EnvResource>(&self) -> Result<Vec<T>, EnvironmentError>;
+
     /// Server-Side Apply a namespaced resource (create or update).
     async fn apply<T: EnvResource>(&self, namespace: &str, obj: T) -> Result<(), EnvironmentError>;
 

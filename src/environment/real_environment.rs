@@ -57,6 +57,11 @@ impl Environment for RealEnvironment {
         Ok(api.list(&Default::default()).await?.items)
     }
 
+    async fn list_all<T: EnvResource>(&self) -> Result<Vec<T>, EnvironmentError> {
+        let api = Api::<T>::all(self.client.clone());
+        Ok(api.list(&Default::default()).await?.items)
+    }
+
     async fn apply<T: EnvResource>(&self, namespace: &str, obj: T) -> Result<(), EnvironmentError> {
         let api = Api::<T>::namespaced(self.client.clone(), namespace);
         let params = self.ssa_params();

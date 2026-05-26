@@ -81,6 +81,11 @@ pub mod group;
 pub mod reconcile;
 pub mod status;
 
+pub mod extensions;
+
+pub mod listener;
+pub mod runtime;
+
 #[cfg(feature = "test-support")]
 pub mod testing;
 

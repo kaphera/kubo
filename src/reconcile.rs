@@ -229,26 +229,20 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         self
     }
 
-    /// Execute the reconcile pass.
+    /// Run the pipeline steps and patch status, without managing finalizers.
     ///
-    /// Manages the finalizer lifecycle, routes to apply or cleanup
-    /// based on the object's deletion timestamp, and patches status
-    /// after every step (only when changed, compared via `PartialEq`).
+    /// This is the core "tick" of the reconcile loop: given the current
+    /// object state, run the appropriate pipeline (apply or cleanup based
+    /// on deletion timestamp) and patch status after each step.
     ///
-    /// The closure receives the current pipeline state and the previous
-    /// resource-specific status fields (`prev`). It returns the new
-    /// domain-specific status `T`. The framework wraps `T` in
-    /// [`ResourceStatus<T>`](crate::status::ResourceStatus) automatically,
-    /// supplying `conditions` and `observedGeneration`.
+    /// Use this when finalizer lifecycle is handled externally, or when
+    /// the controller only needs to converge state without owning cleanup
+    /// guarantees (e.g. status-only controllers, read-only observers).
     ///
-    /// All Kubernetes interactions go through the [`Environment`] trait
-    /// passed to [`Reconcile::new`], making this method fully
-    /// unit-testable.
-    pub async fn run<T, F>(
-        mut self,
-        finalizer_name: &str,
-        build_status: F,
-    ) -> Result<Action, ReconcileError>
+    /// The closure receives the current pipeline [`State`] bag and the
+    /// previous resource-specific status `T`. The framework wraps `T` in
+    /// [`ResourceStatus<T>`](crate::status::ResourceStatus) automatically.
+    pub async fn converge<T, F>(&mut self, build_status: F) -> Result<Action, ReconcileError>
     where
         T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
         F: Fn(&State, &T) -> T,
@@ -265,8 +259,6 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         let prev_resource = prev_wrapped.resource;
 
         let is_deleting = self.obj.meta().deletion_timestamp.is_some();
-        let existing_finalizers: Vec<String> =
-            self.obj.meta().finalizers.clone().unwrap_or_default();
 
         let has_rotation = self.rotation_annotation.and_then(|key| {
             self.obj
@@ -278,15 +270,50 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         });
 
         if is_deleting {
+            self.run_cleanup::<T, F>(&obj_ref, &prev_resource, &build_status)
+                .await
+        } else {
+            self.run_apply::<T, F>(&obj_ref, &prev_resource, &build_status, has_rotation)
+                .await
+        }
+    }
+
+    /// Full reconcile lifecycle: finalizer management + pipeline execution.
+    ///
+    /// Ensures the finalizer is present before applying, runs cleanup on
+    /// deletion, and removes the finalizer once cleanup succeeds. This is
+    /// the standard entry point for controllers that own external resources
+    /// requiring cleanup guarantees.
+    ///
+    /// The closure receives the current pipeline [`State`] bag and the
+    /// previous resource-specific status `T`. The framework wraps `T` in
+    /// [`ResourceStatus<T>`](crate::status::ResourceStatus) automatically,
+    /// supplying `conditions` and `observedGeneration`.
+    pub async fn execute<T, F>(
+        mut self,
+        finalizer_name: &str,
+        build_status: F,
+    ) -> Result<Action, ReconcileError>
+    where
+        T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
+        F: Fn(&State, &T) -> T,
+    {
+        let is_deleting = self.obj.meta().deletion_timestamp.is_some();
+        let existing_finalizers: Vec<String> =
+            self.obj.meta().finalizers.clone().unwrap_or_default();
+
+        if is_deleting {
             let has_our_finalizer = existing_finalizers.iter().any(|f| f == finalizer_name);
 
             if !has_our_finalizer {
                 return Ok(Action::await_change());
             }
 
-            let action = self
-                .run_cleanup::<T, F>(&obj_ref, &prev_resource, &build_status)
-                .await?;
+            let action = self.converge::<T, F>(build_status).await?;
+
+            let namespace = self.obj.meta().namespace.clone().unwrap_or_default();
+            let name = self.obj.meta().name.clone().unwrap_or_default();
+            let obj_ref = ObjectRef::new(&namespace, &name);
             let finalizers: Vec<String> = existing_finalizers
                 .into_iter()
                 .filter(|f| f.as_str() != finalizer_name)
@@ -295,6 +322,9 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
             Ok(action)
         } else {
             if !existing_finalizers.iter().any(|f| f == finalizer_name) {
+                let namespace = self.obj.meta().namespace.clone().unwrap_or_default();
+                let name = self.obj.meta().name.clone().unwrap_or_default();
+                let obj_ref = ObjectRef::new(&namespace, &name);
                 let mut new_finalizers = existing_finalizers;
                 new_finalizers.push(finalizer_name.to_string());
                 self.env
@@ -302,10 +332,49 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
                     .await?;
             }
 
-            let action = self
-                .run_apply::<T, F>(&obj_ref, &prev_resource, &build_status, has_rotation)
-                .await?;
-            Ok(action)
+            self.converge::<T, F>(build_status).await
+        }
+    }
+
+    /// Backward-compatible alias for [`execute`](Self::execute).
+    ///
+    /// Prefer `execute` in new code.
+    pub async fn run<T, F>(
+        self,
+        finalizer_name: &str,
+        build_status: F,
+    ) -> Result<Action, ReconcileError>
+    where
+        T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
+        F: Fn(&State, &T) -> T,
+    {
+        self.execute(finalizer_name, build_status).await
+    }
+
+    /// Attach a status builder to the pipeline, producing a [`ReadyReconcile`]
+    /// that can be executed without passing the closure separately.
+    ///
+    /// This is the terminal builder method — call it last, after all gates,
+    /// effects, and polls are registered:
+    ///
+    /// ```ignore
+    /// Reconcile::new(env, obj)
+    ///     .effect(CreateDatabase { .. })
+    ///     .poll(WaitForReady { .. })
+    ///     .status(|state, prev| MyStatus {
+    ///         database_url: state.get::<CreateDatabase>().cloned(),
+    ///     })
+    ///     .execute(FINALIZER)
+    ///     .await
+    /// ```
+    pub fn status<T, F>(self, build_status: F) -> ReadyReconcile<'r, E, R, T>
+    where
+        T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
+        F: Fn(&State, &T) -> T + Send + Sync + 'r,
+    {
+        ReadyReconcile {
+            inner: self,
+            build_status: Box::new(build_status),
         }
     }
 
@@ -463,6 +532,33 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         };
         let _ = patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await;
         Ok(Action::await_change())
+    }
+}
+
+/// A `Reconcile` pipeline with its status builder already attached.
+///
+/// Produced by [`Reconcile::status()`]. Call `.execute(finalizer)` or
+/// `.converge()` to run the pipeline — no closure needed at that point.
+pub struct ReadyReconcile<'r, E: Environment + Sync, R: EnvResource + HasConditions, T>
+where
+    T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
+{
+    inner: Reconcile<'r, E, R>,
+    build_status: Box<dyn Fn(&State, &T) -> T + Send + Sync + 'r>,
+}
+
+impl<'r, E: Environment + Sync, R: EnvResource + HasConditions, T> ReadyReconcile<'r, E, R, T>
+where
+    T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
+{
+    /// Full reconcile lifecycle: finalizer management + pipeline execution.
+    pub async fn execute(self, finalizer_name: &str) -> Result<Action, ReconcileError> {
+        self.inner.execute(finalizer_name, self.build_status).await
+    }
+
+    /// Run the pipeline without managing finalizers.
+    pub async fn converge(mut self) -> Result<Action, ReconcileError> {
+        self.inner.converge(self.build_status).await
     }
 }
 
