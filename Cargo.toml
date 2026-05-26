@@ -13,7 +13,6 @@ async-trait = "0.1.89"
 futures = "0.3"
 gethostname = "1"
 k8s-openapi = { version = "0.27", default-features = false, features = ["latest", "schemars"] }
-k8s-operator-runtime = { path = "../k8s-operator-runtime" }
 kube = { version = "3.1.0", features = ["runtime"] }
 proptest = "1.11.0"
 schemars = "1"
@@ -26,4 +25,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 kube = { version = "3.1.0", features = ["runtime", "derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "test-util"] }

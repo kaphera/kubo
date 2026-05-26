@@ -89,8 +89,8 @@ impl RuntimeConfig {
 
 /// Collects listeners and runs them under a unified lifecycle.
 ///
-/// Manages leader election via `k8s-operator-runtime`'s Coordination v1 Lease,
-/// signal handling (SIGTERM/SIGINT), and controller spawning/cancellation.
+/// Manages leader election via a Coordination v1 Lease, signal handling
+/// (SIGTERM/SIGINT), and controller spawning/cancellation.
 ///
 /// ```text
 /// Runtime (leader election, signals, drain)
@@ -101,9 +101,10 @@ impl RuntimeConfig {
 /// # Example
 ///
 /// ```ignore
-/// Runtime::new("kaphera-edc-operator", env)
-///     .with(client)                     // kube::Client
-///     .with(reqwest::Client::new())     // HTTP client for external APIs
+/// use kubo::runtime::Runtime;
+///
+/// Runtime::new("my-operator", client, env)
+///     .with(reqwest::Client::new())
 ///     .listener(VaultInstanceListener)
 ///     .listener(PostgresDatabaseListener)
 ///     .run()

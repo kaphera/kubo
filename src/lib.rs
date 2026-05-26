@@ -1,10 +1,27 @@
-//! A minimal, opinionated framework for building Kubernetes operators in Rust.
+//! A complete, opinionated framework for building Kubernetes operators in Rust.
 //!
-//! `k8s-operator-reconciler` eliminates the boilerplate of writing reconcile
-//! loops by modelling them as sequential pipelines of composable steps. You
-//! declare what your controller does — resolve dependencies, create resources,
-//! wait for readiness — and the framework handles finalizer lifecycle, status
-//! patching, backoff, and cleanup ordering.
+//! Kubo eliminates the boilerplate of writing reconcile loops by modelling
+//! controllers as sequential pipelines of composable steps. You declare what
+//! your controller does — resolve dependencies, create resources, wait for
+//! readiness — and the framework handles finalizer lifecycle, status patching,
+//! backoff, and cleanup ordering. The top-level [`Runtime`](runtime::Runtime)
+//! manages leader election and OS signal handling so you never wire that up
+//! yourself.
+//!
+//! # Architecture
+//!
+//! Kubo is structured in three layers, each with a single responsibility:
+//!
+//! ```text
+//! Runtime  — leader election, signal handling, wiring listeners together
+//!   └─ Listener  — declares one controller: which CRD to watch + how to reconcile it
+//!        └─ Reconcile  — the step pipeline for a single reconcile pass
+//! ```
+//!
+//! [`Runtime`](runtime::Runtime) is the entry point. You register one
+//! [`Listener`](listener::Listener) per CRD kind, and the runtime drives them
+//! all. Each `Listener` owns exactly one reconcile definition, keeping
+//! controllers isolated from each other.
 //!
 //! # Core Concepts
 //!
@@ -22,6 +39,10 @@
 //! [`State`](state::State) bag. Each step declares its output type via the
 //! [`StateKey`](state::StateKey) trait. Downstream steps retrieve values
 //! with `state.require::<UpstreamStep>()`.
+//!
+//! Status is managed automatically. Wrap your custom status struct in
+//! [`ResourceStatus<T>`](status::ResourceStatus) and Kubo will track
+//! conditions and `observedGeneration` for you — no manual bookkeeping needed.
 //!
 //! # Pipeline Lifecycle
 //!
@@ -47,23 +68,48 @@
 //! # Quick Example
 //!
 //! ```ignore
-//! use k8s_operator_reconciler::reconcile::Reconcile;
-//! use k8s_operator_reconciler::utils::ConditionContext;
+//! use kubo::runtime::Runtime;
+//! use kubo::listener::{Listener, ControllerContext};
+//! use kubo::reconcile::{ReadyReconcile, Reconcile};
+//! use kubo::environment::{RealEnvironment, ObjectRef};
 //!
-//! let cx = ConditionContext::new(generation)
-//!     .with_ready_reason("Provisioned", "All resources created");
-//!
-//! Reconcile::new(&env, &cx, &mut conditions)
-//!     .gate(ResolveUpstreamDependency { .. })
-//!     .effect(CreateDatabase { .. })
-//!     .effect(CreateSecret { .. })
-//!     .poll(WaitForDatabaseReady { .. })
-//!     .run(FINALIZER, obj, |conds, state| MyStatus {
-//!         observed_generation: Some(generation),
-//!         conditions: conds.to_vec(),
-//!         database_url: state.get::<CreateDatabase>().cloned(),
-//!     })
+//! // Wire up the runtime in main():
+//! Runtime::new("my-operator", client, env)
+//!     .with(reqwest::Client::new())
+//!     .listener(DatabaseListener)
+//!     .run()
 //!     .await
+//!
+//! // One struct per controller:
+//! pub struct DatabaseListener;
+//!
+//! impl Listener<RealEnvironment, Database> for DatabaseListener {
+//!     type Status = DatabaseStatus;
+//!
+//!     const NAME: &'static str = "database";
+//!     const FINALIZER: &'static str = "databases.example.com/cleanup";
+//!
+//!     fn controller(&self, ctx: &ControllerContext<RealEnvironment>) -> Controller<Database> {
+//!         let client = ctx.require::<kube::Client>().clone();
+//!         Controller::new(Api::<Database>::all(client), Config::default())
+//!     }
+//!
+//!     fn reconcile<'a>(
+//!         &'a self,
+//!         ctx: &'a ControllerContext<RealEnvironment>,
+//!         obj: Arc<Database>,
+//!     ) -> ReadyReconcile<'a, RealEnvironment, Database, DatabaseStatus> {
+//!         Reconcile::new(ctx.env(), obj.clone())
+//!             .ready_reason("Provisioned", "Database and credentials ready")
+//!             .gate(ResolveUpstream { .. })
+//!             .effect(CreateDatabase { .. })
+//!             .effect(CreateCredentialSecret { .. })
+//!             .poll(WaitForReady { .. })
+//!             .status(|state, _prev| DatabaseStatus {
+//!                 connection_url: state.get::<CreateDatabase>().cloned(),
+//!             })
+//!     }
+//! }
 //! ```
 
 pub mod environment;

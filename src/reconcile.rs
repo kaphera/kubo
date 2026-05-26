@@ -54,22 +54,21 @@ pub enum ReconcileError {
 /// status after every step (only when changed).
 ///
 /// All Kubernetes interactions go through the [`Environment`] trait,
-/// making the entire `run()` method unit-testable without a cluster.
+/// making the entire pipeline unit-testable without a cluster.
 ///
 /// ```ignore
-/// Reconcile::new(&env, obj.clone())
+/// use kubo::reconcile::Reconcile;
+///
+/// Reconcile::new(ctx.env(), obj.clone())
 ///     .ready_reason("Provisioned", "All resources ready")
-///     .gate(MyGate { ... })
-///     .effect(CreateExternalThing { ... })
-///     .effect(ApplyK8sResource { ... })
-///     .poll(WaitForReady { ... })
-///     .run(FINALIZER_NAME, |conds, state, prev| {
-///         MyStatus {
-///             observed_generation: Some(generation),
-///             conditions: conds.to_vec(),
-///             some_field: state.get::<MyGate>().cloned(),
-///         }
+///     .gate(MyGate { .. })
+///     .effect(CreateExternalThing { .. })
+///     .effect(ApplyK8sResource { .. })
+///     .poll(WaitForReady { .. })
+///     .status(|state, _prev| MyStatus {
+///         some_field: state.get::<MyGate>().cloned(),
 ///     })
+///     .execute(FINALIZER)
 ///     .await
 /// ```
 pub struct Reconcile<'r, E: Environment + Sync, R: EnvResource + HasConditions> {
@@ -210,7 +209,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// Declare an annotation key that triggers credential rotation.
     ///
     /// When the reconciled object carries this annotation, the framework
-    /// inserts [`RotationRequested`](crate::state::RotationRequested) into
+    /// inserts [`RotationRequested`] into
     /// the state bag before running the pipeline. Effects query it via
     /// `state.contains::<RotationRequested>()` to decide whether to
     /// regenerate secrets.
