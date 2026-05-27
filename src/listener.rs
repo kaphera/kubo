@@ -5,6 +5,7 @@ use kube::runtime::Controller;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::extensions::Extensions;
+use crate::reconcile::Reconcile;
 use crate::{
     HasConditions,
     environment::{EnvResource, Environment},
@@ -94,7 +95,10 @@ where
     /// (or anything else) from extensions for building `Api<R>`.
     /// The returned Controller is not yet running — the Runtime attaches
     /// shutdown via `graceful_shutdown_on` before calling `.run()`.
-    fn controller(&self, ctx: &ControllerContext<E>) -> Controller<R>;
+    fn controller(&self, ctx: &ControllerContext<E>, ctrl: Controller<R>) -> Controller<R> {
+        let _ = ctx;
+        ctrl
+    }
 
     /// Build the reconcile pipeline for a single object.
     ///
@@ -119,5 +123,6 @@ where
         &'a self,
         ctx: &'a ControllerContext<E>,
         obj: Arc<R>,
+        rec: Reconcile<'a, E, R>,
     ) -> ReadyReconcile<'a, E, R, Self::Status>;
 }

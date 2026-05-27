@@ -2,7 +2,10 @@ use std::{fmt::Debug, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use futures::StreamExt;
-use kube::runtime::controller::Action;
+use kube::{
+    Api,
+    runtime::{Controller, controller::Action},
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -11,7 +14,7 @@ use crate::{
     environment::{EnvResource, Environment},
     extensions::Extensions,
     listener::{ControllerContext, Listener},
-    reconcile::ReconcileError,
+    reconcile::{Reconcile, ReconcileError},
     runtime::lease::LeaseLock,
 };
 
@@ -155,15 +158,24 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
         L: Listener<E, R> + 'static,
     {
         let listener = Arc::new(listener);
+        let client = self.client.clone();
 
         let factory: ControllerFn<E> = Box::new(move |rt_ctx, cancel| {
             let listener = Arc::clone(&listener);
             let env = rt_ctx.env_arc();
             let extensions = rt_ctx.extensions_arc();
+            let client = client.clone();
 
             Box::pin(async move {
                 let ctrl_ctx = Arc::new(ControllerContext::new(env, extensions));
-                let controller = listener.controller(&ctrl_ctx);
+                let controller = {
+                    use kube::runtime::watcher::Config as WatcherConfig;
+
+                    let api = Api::<R>::all(client);
+                    let controller = Controller::new(api, WatcherConfig::default());
+
+                    listener.controller(&ctrl_ctx, controller)
+                };
 
                 info!(controller = L::NAME, "Starting controller");
 
@@ -175,8 +187,9 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
                             move |obj: Arc<R>, ctx: Arc<ControllerContext<E>>| {
                                 let listener = Arc::clone(&listener);
                                 async move {
+                                    let reconciler = Reconcile::new(ctx.env(), obj.clone());
                                     listener
-                                        .reconcile(&ctx, obj)
+                                        .reconcile(&ctx, obj, reconciler)
                                         .execute(L::FINALIZER)
                                         .await
                                 }
