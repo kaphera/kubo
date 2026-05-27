@@ -183,7 +183,8 @@ pub trait HasConditions {
     fn conditions(&self) -> Vec<Condition>;
 }
 
-pub struct ReconcileContext<'a> {
+pub struct ReconcileContext<'a, K> {
     pub object: &'a ObjectRef,
     pub condition: &'a ConditionContext,
+    pub cr: &'a K,
 }

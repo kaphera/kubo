@@ -54,7 +54,7 @@ use crate::{ReconcileContext, backoff::Backoff, environment::Environment, state:
 /// inserts the `Pass` value into the pipeline's [`State`](crate::state::State)
 /// bag automatically — gates never touch state directly.
 #[async_trait]
-pub trait Gate<E: Environment + Sync>: StateKey {
+pub trait Gate<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
     /// The error type returned when the gate encounters an unrecoverable failure.
     ///
     /// Must implement `Into<ReconcilerError>` so the framework can propagate it.
@@ -67,7 +67,7 @@ pub trait Gate<E: Environment + Sync>: StateKey {
     /// Returning `Err` signals a hard failure that aborts the reconcile pass.
     async fn evaluate(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
     ) -> Result<Outcome<<Self as StateKey>::Value>, Self::Error>;
 }

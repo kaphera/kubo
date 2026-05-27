@@ -76,8 +76,8 @@ pub struct Reconcile<'r, E: Environment + Sync, R: EnvResource + HasConditions> 
     cx: ConditionContext,
     conditions: Vec<Condition>,
     obj: Arc<R>,
-    apply_steps: Vec<Box<dyn ApplyStep<E> + 'r>>,
-    cleanup_steps: Vec<Box<dyn CleanableStep<E> + 'r>>,
+    apply_steps: Vec<Box<dyn ApplyStep<E, R> + 'r>>,
+    cleanup_steps: Vec<Box<dyn CleanableStep<E, R> + 'r>>,
     steady_interval: Duration,
     rotation_annotation: Option<&'r str>,
 }
@@ -117,7 +117,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// `state.get::<G>()`.
     pub fn gate<G>(mut self, gate: G) -> Self
     where
-        G: Gate<E> + StateKey + Send + Sync + 'r,
+        G: Gate<E, R> + StateKey + Send + Sync + 'r,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
     {
@@ -131,7 +131,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// in a single pipeline (e.g. resolving two different VaultInstances).
     pub fn gate_as<K, G>(mut self, gate: G) -> Self
     where
-        G: Gate<E> + Send + Sync + 'r,
+        G: Gate<E, R> + Send + Sync + 'r,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
         K: StateKey<Value = <G as StateKey>::Value> + Send + Sync + 'r,
@@ -147,7 +147,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// but whose output is not needed downstream.
     pub fn guard<G>(mut self, gate: G) -> Self
     where
-        G: Gate<E> + Send + Sync + 'r,
+        G: Gate<E, R> + Send + Sync + 'r,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
     {
@@ -160,7 +160,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// declaration order via [`Effect::cleanup`].
     pub fn effect<F>(mut self, effect: F) -> Self
     where
-        F: Effect<E> + StateKey + Send + Sync + 'r,
+        F: Effect<E, R> + StateKey + Send + Sync + 'r,
         F::Error: Into<ReconcilerError>,
         <F as StateKey>::Value: Send + Sync,
     {
@@ -176,7 +176,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// Add a poll. Polls observe state without mutating it.
     pub fn poll<P>(mut self, poll: P) -> Self
     where
-        P: Poll<E> + Send + Sync + 'r,
+        P: Poll<E, R> + Send + Sync + 'r,
         P::Error: Into<ReconcilerError>,
     {
         self.apply_steps.push(Box::new(PollStep::new(poll)));
@@ -192,7 +192,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     ///
     /// Cleanup runs in reverse declaration order within the group, at the
     /// position of the group in the outer pipeline's cleanup sequence.
-    pub fn group<V>(mut self, group: Group<V, E>) -> Self
+    pub fn group<V>(mut self, group: Group<V, E, R>) -> Self
     where
         V: Send + Sync + 'static,
         E: 'static,
@@ -412,6 +412,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         let cx = ReconcileContext {
             object: obj_ref,
             condition: &self.cx,
+            cr: &*self.obj,
         };
 
         for step in self.apply_steps.iter() {
@@ -492,6 +493,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         let cx = ReconcileContext {
             object: obj_ref,
             condition: &self.cx,
+            cr: &*self.obj,
         };
 
         for step in self.cleanup_steps.iter().rev() {
@@ -566,14 +568,15 @@ where
 struct SharedApplyStep<T>(Arc<T>);
 
 #[async_trait::async_trait]
-impl<T, E> ApplyStep<E> for SharedApplyStep<T>
+impl<T, E, K> ApplyStep<E, K> for SharedApplyStep<T>
 where
-    T: ApplyStep<E> + Send + Sync,
+    T: ApplyStep<E, K> + Send + Sync,
     E: Environment + Sync,
+    K: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         state: &mut State,
     ) -> StepProgress {
@@ -584,12 +587,13 @@ where
 struct SharedCleanableStep<T>(Arc<T>);
 
 #[async_trait::async_trait]
-impl<T, E> CleanableStep<E> for SharedCleanableStep<T>
+impl<T, E, K> CleanableStep<E, K> for SharedCleanableStep<T>
 where
-    T: CleanableStep<E> + Send + Sync,
+    T: CleanableStep<E, K> + Send + Sync,
     E: Environment + Sync,
+    K: Send + Sync,
 {
-    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext, env: &'a E) -> CleanupProgress {
+    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext<K>, env: &'a E) -> CleanupProgress {
         self.0.run_cleanup(cx, env).await
     }
 }

@@ -107,7 +107,7 @@ pub enum EffectOutcome<T> {
 /// the parent resource is being deleted (i.e. during the finalizer's
 /// `Cleanup` event).
 #[async_trait]
-pub trait Effect<E: Environment + Sync>: StateKey {
+pub trait Effect<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
     type Error;
 
     /// Apply this effect — create or update external state.
@@ -122,7 +122,7 @@ pub trait Effect<E: Environment + Sync>: StateKey {
     /// but requires the framework to requeue.
     async fn apply(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
         state: &State,
     ) -> Result<EffectOutcome<<Self as StateKey>::Value>, Self::Error>;
@@ -137,7 +137,11 @@ pub trait Effect<E: Environment + Sync>: StateKey {
     ///
     /// The default returns [`CleanupAction::Skip`], indicating that no
     /// explicit teardown is needed.
-    async fn cleanup(&self, cx: &ReconcileContext, env: &E) -> Result<CleanupAction, Self::Error> {
+    async fn cleanup(
+        &self,
+        cx: &ReconcileContext<K>,
+        env: &E,
+    ) -> Result<CleanupAction, Self::Error> {
         let _ = cx;
         let _ = env;
         Ok(CleanupAction::Skip)

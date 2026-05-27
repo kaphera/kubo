@@ -50,6 +50,8 @@
 //!     .await
 //! ```
 
+use std::marker::PhantomData;
+
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
@@ -72,19 +74,17 @@ enum SubStepResult {
     },
 }
 
-/// A type-erased step within a group. Each sub-step operates on the
-/// group's internal state bag. Only effects carry cleanup obligations.
 #[async_trait]
-trait SubStep<E: Environment + Sync>: Send + Sync {
+trait SubStep<E: Environment + Sync, K: Send + Sync>: Send + Sync {
     async fn run(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError>;
     async fn cleanup(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
     ) -> Result<CleanupAction, ReconcilerError>;
 }
@@ -94,16 +94,17 @@ struct SubGateStep<G> {
 }
 
 #[async_trait]
-impl<G, E> SubStep<E> for SubGateStep<G>
+impl<G, E, K> SubStep<E, K> for SubGateStep<G>
 where
     E: Environment + Sync,
-    G: Gate<E> + StateKey + Send + Sync,
+    K: Send + Sync,
+    G: Gate<E, K> + StateKey + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
     async fn run(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
@@ -121,7 +122,7 @@ where
 
     async fn cleanup(
         &self,
-        _cx: &ReconcileContext,
+        _cx: &ReconcileContext<K>,
         _env: &E,
     ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
@@ -133,16 +134,17 @@ struct SubEffectStep<F> {
 }
 
 #[async_trait]
-impl<F, E> SubStep<E> for SubEffectStep<F>
+impl<F, E, K> SubStep<E, K> for SubEffectStep<F>
 where
     E: Environment + Sync,
-    F: Effect<E> + StateKey + Send + Sync,
+    K: Send + Sync,
+    F: Effect<E, K> + StateKey + Send + Sync,
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
     async fn run(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
@@ -160,7 +162,7 @@ where
 
     async fn cleanup(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
     ) -> Result<CleanupAction, ReconcilerError> {
         self.effect.cleanup(cx, env).await.map_err(Into::into)
@@ -172,15 +174,16 @@ struct SubPollStep<P> {
 }
 
 #[async_trait]
-impl<P, E> SubStep<E> for SubPollStep<P>
+impl<P, E, K> SubStep<E, K> for SubPollStep<P>
 where
     E: Environment + Sync,
-    P: Poll<E> + Send + Sync,
+    K: Send + Sync,
+    P: Poll<E, K> + Send + Sync,
     P::Error: Into<ReconcilerError>,
 {
     async fn run(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
         _state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
@@ -196,7 +199,7 @@ where
 
     async fn cleanup(
         &self,
-        _cx: &ReconcileContext,
+        _cx: &ReconcileContext<K>,
         _env: &E,
     ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
@@ -230,17 +233,21 @@ where
 ///
 /// Cleanup walks effects in reverse declaration order (gates and polls are
 /// skipped — they have no cleanup obligations).
-pub struct Group<V, E: Environment + Sync> {
-    steps: Vec<Box<dyn SubStep<E>>>,
+pub struct Group<V, E: Environment + Sync, K: Send + Sync = ()> {
+    steps: Vec<Box<dyn SubStep<E, K>>>,
     reducer: Option<Box<dyn Reducer<V>>>,
+    _phantom: PhantomData<K>,
 }
 
-impl<V: Send + Sync + 'static, E: Environment + Sync + 'static> Group<V, E> {
+impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static>
+    Group<V, E, K>
+{
     /// Create an empty group.
     pub fn new() -> Self {
         Self {
             steps: Vec::new(),
             reducer: None,
+            _phantom: PhantomData,
         }
     }
 
@@ -251,7 +258,7 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static> Group<V, E> {
     /// group propagates it as a Retry to the outer pipeline.
     pub fn gate<G>(mut self, gate: G) -> Self
     where
-        G: Gate<E> + StateKey + Send + Sync + 'static,
+        G: Gate<E, K> + StateKey + Send + Sync + 'static,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
     {
@@ -266,7 +273,7 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static> Group<V, E> {
     /// pipeline runs cleanup.
     pub fn effect<F>(mut self, effect: F) -> Self
     where
-        F: Effect<E> + StateKey + Send + Sync + 'static,
+        F: Effect<E, K> + StateKey + Send + Sync + 'static,
         F::Error: Into<ReconcilerError>,
         <F as StateKey>::Value: Send + Sync,
     {
@@ -280,7 +287,7 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static> Group<V, E> {
     /// as a Retry to the outer pipeline.
     pub fn poll<P>(mut self, poll: P) -> Self
     where
-        P: Poll<E> + Send + Sync + 'static,
+        P: Poll<E, K> + Send + Sync + 'static,
         P::Error: Into<ReconcilerError>,
     {
         self.steps.push(Box::new(SubPollStep { poll }));
@@ -303,16 +310,17 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static> Group<V, E> {
 }
 
 #[async_trait]
-impl<V, E> Effect<E> for Group<V, E>
+impl<V, E, K> Effect<E, K> for Group<V, E, K>
 where
     V: Send + Sync + 'static,
     E: Environment + Sync + 'static,
+    K: Send + Sync + 'static,
 {
     type Error = ReconcilerError;
 
     async fn apply(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
         _outer_state: &State,
     ) -> Result<EffectOutcome<V>, ReconcilerError> {
@@ -342,7 +350,7 @@ where
 
     async fn cleanup(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<K>,
         env: &E,
     ) -> Result<CleanupAction, ReconcilerError> {
         for step in self.steps.iter().rev() {
@@ -355,6 +363,8 @@ where
     }
 }
 
-impl<V: Send + Sync + 'static, E: Environment + Sync + 'static> StateKey for Group<V, E> {
+impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static> StateKey
+    for Group<V, E, K>
+{
     type Value = V;
 }

@@ -74,10 +74,10 @@ pub enum PollState {
 /// block the pipeline until a condition is met and to surface progress
 /// information via status conditions.
 #[async_trait]
-pub trait Poll<E: Environment + Sync> {
+pub trait Poll<E: Environment + Sync, K: Send + Sync = ()> {
     /// The error type for unrecoverable failures during the check.
     type Error;
 
     /// Observe the current state and return whether convergence has been reached.
-    async fn check(&self, cx: &ReconcileContext, env: &E) -> Result<PollState, Self::Error>;
+    async fn check(&self, cx: &ReconcileContext<K>, env: &E) -> Result<PollState, Self::Error>;
 }

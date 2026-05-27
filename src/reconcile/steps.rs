@@ -18,18 +18,18 @@ use super::StepProgress;
 // ─── Apply-phase steps ───────────────────────────────────────────────
 
 #[async_trait]
-pub(super) trait ApplyStep<E: Environment>: Send + Sync {
+pub(super) trait ApplyStep<E: Environment, K: Send + Sync>: Send + Sync {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         state: &mut State,
     ) -> StepProgress;
 }
 
 #[async_trait]
-pub(super) trait CleanableStep<E: Environment>: Send + Sync {
-    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext, env: &'a E) -> CleanupProgress;
+pub(super) trait CleanableStep<E: Environment, K: Send + Sync>: Send + Sync {
+    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext<K>, env: &'a E) -> CleanupProgress;
 }
 
 pub(super) enum CleanupProgress {
@@ -52,16 +52,17 @@ impl<G> GateStep<G> {
 }
 
 #[async_trait]
-impl<G, E> ApplyStep<E> for GateStep<G>
+impl<G, E, K> ApplyStep<E, K> for GateStep<G>
 where
     E: Environment + Sync,
-    G: Gate<E> + StateKey + Send + Sync,
+    K: Send + Sync,
+    G: Gate<E, K> + StateKey + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         state: &mut State,
     ) -> StepProgress {
@@ -78,13 +79,13 @@ where
 
 // ─── GateAsStep ──────────────────────────────────────────────────────
 
-/// A gate whose output is stored in `State` under an explicit key `K`.
-pub(super) struct GateAsStep<G, K> {
+/// A gate whose output is stored in `State` under an explicit key `J`.
+pub(super) struct GateAsStep<G, J> {
     gate: G,
-    _key: PhantomData<K>,
+    _key: PhantomData<J>,
 }
 
-impl<G, K> GateAsStep<G, K> {
+impl<G, J> GateAsStep<G, J> {
     pub fn new(gate: G) -> Self {
         Self {
             gate,
@@ -94,23 +95,24 @@ impl<G, K> GateAsStep<G, K> {
 }
 
 #[async_trait]
-impl<G, K, E> ApplyStep<E> for GateAsStep<G, K>
+impl<G, J, E, K> ApplyStep<E, K> for GateAsStep<G, J>
 where
     E: Environment + Sync,
-    G: Gate<E> + Send + Sync,
+    K: Send + Sync,
+    G: Gate<E, K> + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
-    K: StateKey<Value = <G as StateKey>::Value> + Send + Sync,
+    J: StateKey<Value = <G as StateKey>::Value> + Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         state: &mut State,
     ) -> StepProgress {
         match self.gate.evaluate(cx, env).await {
             Ok(Outcome::Pass(v)) => {
-                state.insert::<K>(v);
+                state.insert::<J>(v);
                 StepProgress::Continue
             }
             Ok(Outcome::Wait { condition, backoff }) => StepProgress::Wait { condition, backoff },
@@ -133,16 +135,17 @@ impl<G> GuardStep<G> {
 }
 
 #[async_trait]
-impl<G, E> ApplyStep<E> for GuardStep<G>
+impl<G, E, K> ApplyStep<E, K> for GuardStep<G>
 where
     E: Environment + Sync,
-    G: Gate<E> + Send + Sync,
+    K: Send + Sync,
+    G: Gate<E, K> + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         _state: &mut State,
     ) -> StepProgress {
@@ -167,16 +170,17 @@ impl<F> EffectStep<F> {
 }
 
 #[async_trait]
-impl<F, E> ApplyStep<E> for EffectStep<F>
+impl<F, E, K> ApplyStep<E, K> for EffectStep<F>
 where
     E: Environment + Sync,
-    F: Effect<E> + StateKey + Send + Sync,
+    K: Send + Sync,
+    F: Effect<E, K> + StateKey + Send + Sync,
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         state: &mut State,
     ) -> StepProgress {
@@ -194,14 +198,15 @@ where
 }
 
 #[async_trait]
-impl<F, E> CleanableStep<E> for EffectStep<F>
+impl<F, E, K> CleanableStep<E, K> for EffectStep<F>
 where
     E: Environment + Sync,
-    F: Effect<E> + StateKey + Send + Sync,
+    K: Send + Sync,
+    F: Effect<E, K> + StateKey + Send + Sync,
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
-    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext, env: &'a E) -> CleanupProgress {
+    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext<K>, env: &'a E) -> CleanupProgress {
         match self.effect.cleanup(cx, env).await {
             Ok(CleanupAction::Skip) | Ok(CleanupAction::Done) => CleanupProgress::Continue,
             Ok(CleanupAction::Retry(backoff)) => CleanupProgress::Retry(backoff),
@@ -223,15 +228,16 @@ impl<P> PollStep<P> {
 }
 
 #[async_trait]
-impl<P, E> ApplyStep<E> for PollStep<P>
+impl<P, E, K> ApplyStep<E, K> for PollStep<P>
 where
     E: Environment + Sync,
-    P: Poll<E> + Send + Sync,
+    K: Send + Sync,
+    P: Poll<E, K> + Send + Sync,
     P::Error: Into<ReconcilerError>,
 {
     async fn run_apply<'a>(
         &'a self,
-        cx: &'a ReconcileContext,
+        cx: &'a ReconcileContext<K>,
         env: &'a E,
         _state: &mut State,
     ) -> StepProgress {
