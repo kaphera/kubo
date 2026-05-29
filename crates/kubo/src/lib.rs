@@ -62,7 +62,7 @@
 //! All Kubernetes interactions go through the [`Environment`](environment::Environment)
 //! trait. The framework ships a [`TestEnvironment`](testing::TestEnvironment)
 //! that runs entirely in-memory — no cluster needed. Combined with the
-//! [`testing::properties`] module, you can write property-based assertions
+//! [`kubo_test::properties`] module, you can write property-based assertions
 //! over your controller's status progression without any infrastructure.
 //!
 //! # Quick Example
@@ -134,6 +134,12 @@ pub mod runtime;
 
 #[cfg(feature = "test-support")]
 pub mod testing;
+
+#[cfg(feature = "test-support")]
+pub use kubo_test_macros::test;
+
+#[cfg(feature = "test-support")]
+pub use kubo_test_macros::property_test;
 
 pub use async_trait::async_trait;
 use kube::ResourceExt;

@@ -1,0 +1,19 @@
+[package]
+name = "kubo-test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kubo = { path = "../kubo" }
+kubo-test-fakeapi = { path = "../kubo-test-fakeapi" }
+k8s-openapi = { workspace = true, features = ["latest", "schemars"] }
+kube = { workspace = true, features = ["client", "derive", "runtime"] }
+futures = { workspace = true }
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+proptest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+
+[dev-dependencies]
+kubo-test-macros = { path = "../kubo-test-macros" }

@@ -1,0 +1,30 @@
+[package]
+name = "kubo"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["test-support"]
+test-support = []
+
+[dependencies]
+kubo-test-macros = { path = "../kubo-test-macros" }
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+gethostname.workspace = true
+k8s-openapi = { workspace = true, features = ["latest", "schemars"] }
+kube = { workspace = true, features = ["runtime"] }
+proptest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "signal"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+kube = { workspace = true, features = ["runtime", "derive"] }
+kubo-test = { path = "../kubo-test" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "test-util"] }

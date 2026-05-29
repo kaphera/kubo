@@ -1,0 +1,20 @@
+[package]
+name = "kubo-conformance"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Enable this feature when running against a real k3d cluster.
+# Gated behind a feature flag because it requires a live cluster.
+k3d = ["dep:kube", "dep:k8s-openapi"]
+
+[dependencies]
+kubo-test-fakeapi = { path = "../kubo-test-fakeapi" }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tower = { workspace = true }
+kube = { workspace = true, features = ["client"], optional = true }
+k8s-openapi = { workspace = true, features = ["latest"], optional = true }

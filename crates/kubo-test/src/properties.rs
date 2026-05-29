@@ -1,7 +1,7 @@
 //! Reusable property assertions over status tick histories.
 //!
 //! Each function takes a `&[S]` (the tick sequence from
-//! [`TestEnvironment::status_ticks`](crate::testing::test_environment::TestEnvironment::status_ticks))
+//! [`World::status_ticks`](crate::World::status_ticks))
 //! and a predicate, and panics with a descriptive message if the property
 //! is violated.
 //!
@@ -16,7 +16,7 @@
 //! pipeline behaves correctly:
 //!
 //! ```ignore
-//! let ticks: Vec<MyStatus> = env.status_ticks(&obj_ref);
+//! let ticks: Vec<MyStatus> = world.status_ticks("ns", "obj");
 //!
 //! // Structural: fields never regress once populated.
 //! assert_monotonic(&ticks, |s| s.url.is_some(), "url");
@@ -34,6 +34,11 @@
 //! ```
 
 use std::fmt;
+
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use kubo::environment::EnvResource;
+
+use crate::World;
 
 /// A property check result.
 pub type PropertyResult = Result<(), PropertyViolation>;
@@ -65,6 +70,49 @@ impl fmt::Display for PropertyViolation {
 }
 
 impl std::error::Error for PropertyViolation {}
+
+// ─── is_ready ────────────────────────────────────────────────────────
+
+/// Returns `true` if `conditions` contains a condition with `type == "Ready"`
+/// and `status == "True"`.
+///
+/// Use this as a predicate with [`assert_converges`]:
+///
+/// ```ignore
+/// assert_converges(&ticks, |s| is_ready(&s.conditions), "reaches Ready");
+/// ```
+pub fn is_ready(conditions: &[Condition]) -> bool {
+    conditions
+        .iter()
+        .any(|c| c.type_ == "Ready" && c.status == "True")
+}
+
+// ─── assert_no_leaks ─────────────────────────────────────────────────
+
+/// Asserts that the named object carries no finalizer equal to `finalizer`.
+///
+/// Use this after deleting an object and running until idle to verify that
+/// the controller cleaned up correctly:
+///
+/// ```ignore
+/// world.delete::<DummyResource>("ns", "obj-1").await;
+/// world.run_until_idle().await;
+/// assert_no_leaks::<DummyResource>(&world, "ns", "obj-1", DummyListener::FINALIZER);
+/// ```
+///
+/// The assertion passes if the object no longer exists (it was fully
+/// garbage-collected) or if it still exists but carries no matching finalizer.
+pub fn assert_no_leaks<T: EnvResource>(world: &World, ns: &str, name: &str, finalizer: &str) {
+    let Some(obj) = world.get::<T>(ns, name) else {
+        // Object was deleted entirely — no leaks possible.
+        return;
+    };
+    let finalizers = obj.meta().finalizers.clone().unwrap_or_default();
+    assert!(
+        !finalizers.iter().any(|f| f == finalizer),
+        "finalizer '{finalizer}' still present on {ns}/{name} after deletion",
+    );
+}
 
 // ─── Monotonic ───────────────────────────────────────────────────────
 

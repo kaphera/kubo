@@ -1,0 +1,28 @@
+name: conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - run: nix develop --command cargo test --workspace
+
+  conformance:
+    name: conformance (k3d)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - run: nix develop --command k3d cluster create kubo-conformance
+      - run: nix develop --command cargo test -p kubo-conformance --features k3d
+      - run: nix develop --command k3d cluster delete kubo-conformance
+        if: always()

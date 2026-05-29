@@ -1,0 +1,14 @@
+[package]
+name = "kubo-test-fakeapi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = { workspace = true }
+bytes.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
+tower.workspace = true
