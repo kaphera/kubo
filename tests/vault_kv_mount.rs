@@ -113,12 +113,12 @@ impl StateKey for ResolveVaultInstance {
 }
 
 #[async_trait]
-impl<E: Environment + Sync> Gate<E> for ResolveVaultInstance {
+impl<E: Environment + Sync> Gate<E, VaultKvMount> for ResolveVaultInstance {
     type Error = VaultKvMountError;
 
     async fn evaluate(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<VaultKvMount>,
         env: &E,
     ) -> Result<Outcome<String>, Self::Error> {
         let r = ObjectRef::new(&cx.object.namespace, &self.instance_ref);
@@ -166,12 +166,12 @@ impl StateKey for EnableKv2Mount {
 }
 
 #[async_trait]
-impl<E: Environment + Sync> Effect<E> for EnableKv2Mount {
+impl<E: Environment + Sync> Effect<E, VaultKvMount> for EnableKv2Mount {
     type Error = VaultKvMountError;
 
     async fn apply(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<VaultKvMount>,
         _env: &E,
         _state: &State,
     ) -> Result<EffectOutcome<String>, Self::Error> {
@@ -191,7 +191,7 @@ impl<E: Environment + Sync> Effect<E> for EnableKv2Mount {
 
     async fn cleanup(
         &self,
-        _cx: &ReconcileContext,
+        _cx: &ReconcileContext<VaultKvMount>,
         _env: &E,
     ) -> Result<CleanupAction, Self::Error> {
         if !self.vault_available.load(Ordering::Relaxed) {
@@ -223,12 +223,12 @@ impl StateKey for CreateAccessSecret {
 }
 
 #[async_trait]
-impl<E: Environment + Sync> Effect<E> for CreateAccessSecret {
+impl<E: Environment + Sync> Effect<E, VaultKvMount> for CreateAccessSecret {
     type Error = VaultKvMountError;
 
     async fn apply(
         &self,
-        cx: &ReconcileContext,
+        cx: &ReconcileContext<VaultKvMount>,
         _env: &E,
         state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
@@ -246,7 +246,7 @@ impl<E: Environment + Sync> Effect<E> for CreateAccessSecret {
 
     async fn cleanup(
         &self,
-        _cx: &ReconcileContext,
+        _cx: &ReconcileContext<VaultKvMount>,
         _env: &E,
     ) -> Result<CleanupAction, Self::Error> {
         self.cleaned_up.store(true, Ordering::Relaxed);
@@ -263,10 +263,14 @@ struct WaitForMountReady {
 }
 
 #[async_trait]
-impl<E: Environment + Sync> Poll<E> for WaitForMountReady {
+impl<E: Environment + Sync> Poll<E, VaultKvMount> for WaitForMountReady {
     type Error = VaultKvMountError;
 
-    async fn check(&self, cx: &ReconcileContext, _env: &E) -> Result<PollState, Self::Error> {
+    async fn check(
+        &self,
+        cx: &ReconcileContext<VaultKvMount>,
+        _env: &E,
+    ) -> Result<PollState, Self::Error> {
         if self.ready.load(Ordering::Relaxed) {
             Ok(PollState::Done)
         } else {
@@ -377,9 +381,11 @@ async fn gate_waits_when_instance_missing() {
 
     let obj_ref = ObjectRef::new("test-ns", "missing-vault");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("test-ns", "missing-vault", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = gate.evaluate(&rcx, &env).await.unwrap();
     assert!(!result.is_pass());
@@ -410,9 +416,11 @@ async fn gate_passes_when_instance_ready() {
 
     let obj_ref = ObjectRef::new("test-ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("test-ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = gate.evaluate(&rcx, &env).await.unwrap();
     assert!(result.is_pass());
@@ -433,9 +441,11 @@ async fn effect_writes_to_typed_state() {
 
     let obj_ref = ObjectRef::new("ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let outcome = effect.apply(&rcx, &env, &state).await.unwrap();
 
@@ -461,9 +471,11 @@ async fn effect_errors_when_vault_down() {
 
     let obj_ref = ObjectRef::new("ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = effect.apply(&rcx, &env, &state).await;
     assert!(result.is_err());
@@ -483,9 +495,11 @@ async fn cleanup_retries_when_vault_down() {
 
     let obj_ref = ObjectRef::new("ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = effect.cleanup(&rcx, &env).await.unwrap();
     assert!(matches!(result, CleanupAction::Retry(_)));
@@ -506,9 +520,11 @@ async fn cleanup_succeeds_when_vault_available() {
 
     let obj_ref = ObjectRef::new("ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = effect.cleanup(&rcx, &env).await.unwrap();
     assert!(matches!(result, CleanupAction::Done));
@@ -532,9 +548,11 @@ async fn effect_chain_reads_state_from_prior() {
 
     let obj_ref = ObjectRef::new("test-ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("test-ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = effect.apply(&rcx, &env, &state).await;
     assert!(result.is_ok());
@@ -553,9 +571,11 @@ async fn effect_fails_without_prior_state() {
 
     let obj_ref = ObjectRef::new("test-ns", "my-kvm");
     let cond_cx = ConditionContext::new(1);
+    let kvm = make_kvm("test-ns", "my-kvm", false);
     let rcx = ReconcileContext {
         object: &obj_ref,
         condition: &cond_cx,
+        cr: &*kvm,
     };
     let result = effect.apply(&rcx, &env, &state).await;
     assert!(result.is_err());
@@ -1099,12 +1119,12 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
     }
 
     #[async_trait]
-    impl<E: Environment + Sync> Effect<E> for CheckRotationEffect {
+    impl<E: Environment + Sync> Effect<E, VaultKvMount> for CheckRotationEffect {
         type Error = VaultKvMountError;
 
         async fn apply(
             &self,
-            _cx: &ReconcileContext,
+            _cx: &ReconcileContext<VaultKvMount>,
             _env: &E,
             state: &State,
         ) -> Result<EffectOutcome<()>, Self::Error> {
@@ -1188,12 +1208,12 @@ async fn no_rotation_when_annotation_absent() {
     }
 
     #[async_trait]
-    impl<E: Environment + Sync> Effect<E> for CheckRotationEffect2 {
+    impl<E: Environment + Sync> Effect<E, VaultKvMount> for CheckRotationEffect2 {
         type Error = VaultKvMountError;
 
         async fn apply(
             &self,
-            _cx: &ReconcileContext,
+            _cx: &ReconcileContext<VaultKvMount>,
             _env: &E,
             state: &State,
         ) -> Result<EffectOutcome<()>, Self::Error> {

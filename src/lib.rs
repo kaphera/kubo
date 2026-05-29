@@ -136,13 +136,14 @@ pub mod runtime;
 pub mod testing;
 
 pub use async_trait::async_trait;
+use kube::ResourceExt;
 
 pub use crate::environment::RealEnvironment;
 use crate::{
-    environment::{EnvironmentError, ObjectRef},
+    environment::{EnvResource, EnvironmentError, ObjectRef},
     utils::ConditionContext,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 
 /// Top-level error returned by individual pipeline steps (gates, effects, polls).
 ///
@@ -187,4 +188,24 @@ pub struct ReconcileContext<'a, K> {
     pub object: &'a ObjectRef,
     pub condition: &'a ConditionContext,
     pub cr: &'a K,
+}
+
+impl<'a, K> ReconcileContext<'a, K>
+where
+    K: EnvResource,
+{
+    pub fn current(&self) -> ObjectRef {
+        let namespace = self.cr.namespace().unwrap_or_default();
+        let name = self.cr.name_any();
+        ObjectRef { namespace, name }
+    }
+
+    pub fn ensure_default_namespace(&self, namespace: Option<String>, name: String) -> ObjectRef {
+        let namespace = namespace.unwrap_or(self.current().namespace.clone());
+        ObjectRef { namespace, name }
+    }
+
+    pub fn owner_reference(&self) -> Option<OwnerReference> {
+        self.cr.controller_owner_ref(&())
+    }
 }
