@@ -439,12 +439,40 @@ impl World {
     /// after construction — which is what `#[kubo::test]` needs when a test
     /// registers its listener inside the function body rather than ahead of
     /// time.
+    ///
+    /// Use [`seed_listener_with_extensions`](Self::seed_listener_with_extensions)
+    /// when the listener's reconcile pipeline pulls values from
+    /// [`ctx.require`](kubo::extensions::Extensions::require) — e.g. an HTTP
+    /// client or a token cache.
     pub fn seed_listener<R, L>(&self, listener: L)
     where
         R: EnvResource + HasConditions + Debug + 'static,
         L: Listener<RealEnvironment, R> + 'static,
     {
-        let handle = spawn_listener_task::<R, L>(self.client.clone(), listener);
+        self.seed_listener_with_extensions::<R, L>(listener, Extensions::new());
+    }
+
+    /// Like [`seed_listener`](Self::seed_listener) but seeds the
+    /// [`ControllerContext`] extensions with caller-supplied values before
+    /// spawning the controller loop.
+    ///
+    /// The `kube::Client` is always inserted automatically on top of whatever
+    /// the caller provides, so there is no need to add it manually.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut ext = Extensions::new();
+    /// ext.insert(reqwest::Client::default());
+    /// ext.insert(Arc::new(MyTokenCache::default()));
+    /// world.seed_listener_with_extensions::<MyResource, _>(MyListener::default(), ext);
+    /// ```
+    pub fn seed_listener_with_extensions<R, L>(&self, listener: L, extensions: Extensions)
+    where
+        R: EnvResource + HasConditions + Debug + 'static,
+        L: Listener<RealEnvironment, R> + 'static,
+    {
+        let handle = spawn_listener_task::<R, L>(self.client.clone(), listener, extensions);
         self.listener_abort_handles.lock().unwrap().push(handle);
     }
 
@@ -614,17 +642,21 @@ impl World {
 ///
 /// This is the shared implementation used by both [`WorldBuilder::listener`]
 /// (deferred until `build()`) and [`World::seed_listener`] (immediate).
-fn spawn_listener_task<R, L>(client: kube::Client, listener: L) -> tokio::task::AbortHandle
+fn spawn_listener_task<R, L>(
+    client: kube::Client,
+    listener: L,
+    mut extensions: Extensions,
+) -> tokio::task::AbortHandle
 where
     R: EnvResource + HasConditions + Debug + 'static,
     L: Listener<RealEnvironment, R> + 'static,
 {
     let listener = Arc::new(listener);
     tokio::spawn(async move {
-        // Build an environment and a minimal extensions map with the client
-        // inserted (so listeners can call ctx.require::<Client>()).
+        // Build an environment and populate extensions.  The kube::Client is
+        // always inserted so listeners can call ctx.require::<kube::Client>();
+        // any caller-supplied entries are preserved underneath it.
         let env = Arc::new(RealEnvironment::new(client.clone(), L::NAME));
-        let mut extensions = Extensions::new();
         extensions.insert(client.clone());
         let extensions = Arc::new(extensions);
         let ctrl_ctx = Arc::new(ControllerContext::new(env, extensions));
@@ -704,13 +736,29 @@ impl WorldBuilder {
     /// It runs on the same tokio runtime as the test — including under paused
     /// time — so reconciles are driven cooperatively by
     /// [`World::run_until_idle`].
-    pub fn listener<R, L>(mut self, listener: L) -> Self
+    ///
+    /// Use [`listener_with_extensions`](Self::listener_with_extensions) when
+    /// the listener pulls values from `ctx.require`.
+    pub fn listener<R, L>(self, listener: L) -> Self
     where
         R: EnvResource + HasConditions + Debug + 'static,
         L: Listener<RealEnvironment, R> + 'static,
     {
-        let factory: ListenerFn =
-            Box::new(move |client: kube::Client| spawn_listener_task::<R, L>(client, listener));
+        self.listener_with_extensions::<R, L>(listener, Extensions::new())
+    }
+
+    /// Like [`listener`](Self::listener) but seeds the [`ControllerContext`]
+    /// extensions with caller-supplied values.
+    ///
+    /// The `kube::Client` is always inserted automatically.
+    pub fn listener_with_extensions<R, L>(mut self, listener: L, extensions: Extensions) -> Self
+    where
+        R: EnvResource + HasConditions + Debug + 'static,
+        L: Listener<RealEnvironment, R> + 'static,
+    {
+        let factory: ListenerFn = Box::new(move |client: kube::Client| {
+            spawn_listener_task::<R, L>(client, listener, extensions)
+        });
         self.listener_fns.push(factory);
         self
     }
