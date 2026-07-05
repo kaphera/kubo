@@ -14,10 +14,13 @@
 //! env.seed(make_vault_instance("my-vault", /* ready = */ true));
 //!
 //! // Run the reconcile pipeline:
-//! let action = Reconcile::new(&env, &cx, &mut conditions)
+//! let action = Reconcile::new(&env, obj)
 //!     .gate(ResolveVault { .. })
 //!     .effect(CreateMount { .. })
-//!     .run(FINALIZER, obj, |conds, state| build_status(conds, state))
+//!     .status(|state, _prev| MyStatus {
+//!         mount_path: state.get::<CreateMount>().cloned(),
+//!     })
+//!     .execute(FINALIZER)
 //!     .await?;
 //!
 //! // Assert on the resulting cluster state:

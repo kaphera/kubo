@@ -1,4 +1,4 @@
-//! Step 8 gate: seed reproducibility.
+//! Seed reproducibility.
 //!
 //! Verifies:
 //! - `#[kubo::test(iterations = N)]` runs the test body N times with

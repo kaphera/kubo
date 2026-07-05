@@ -6,7 +6,7 @@
 //! pipeline the test drives runs the same production code paths it would in a
 //! pod.
 //!
-//! ## Step 5 surface additions
+//! ## Driving controllers
 //!
 //! - [`WorldBuilder::listener`] — register a [`kubo::listener::Listener`] to
 //!   run as a background task inside the test's tokio runtime.
@@ -19,11 +19,12 @@
 //! - [`World::forbid_parking`] / [`World::allow_parking`] — parking-detection
 //!   flags (checked on future calls to `run_until_idle`).
 //!
-//! ## Step 6 surface additions
+//! ## Asserting properties
 //!
 //! - [`properties`] — property assertion functions (`assert_converges`,
 //!   `assert_monotonic`, `assert_causal`, etc.) and helpers (`is_ready`,
-//!   `assert_no_leaks`) migrated from `kubo::testing::properties`.
+//!   `assert_no_leaks`) for checking temporal invariants over status tick
+//!   histories.
 
 pub mod fixtures;
 pub mod properties;
@@ -379,8 +380,8 @@ impl World {
     /// Not yet implemented — use [`advance`](Self::advance) with an explicit
     /// `Duration` for now.
     pub async fn advance_to_next_timer(&self) {
-        // Step 5 stub: introspecting the timer queue requires tokio internals
-        // not yet exposed.  Use advance(Duration) until this is implemented.
+        // Introspecting the timer queue requires tokio internals not yet
+        // exposed.  Use advance(Duration) until this is implemented.
         tokio::task::yield_now().await;
     }
 
@@ -410,7 +411,8 @@ impl World {
     /// I/O) is treated as a test failure.  This prevents tests from hanging
     /// silently on a misconfigured pipeline.
     ///
-    /// Step 5 stub: active detection is wired in a future step.
+    /// Note: active detection is not yet wired; this flag is recorded but
+    /// currently has no effect.
     pub fn forbid_parking(&mut self) {
         self.forbid_parking = true;
     }
@@ -420,7 +422,8 @@ impl World {
     /// Use this when a test intentionally involves real async I/O that may
     /// legitimately block.
     ///
-    /// Step 5 stub: active detection is wired in a future step.
+    /// Note: active detection is not yet wired; this flag is recorded but
+    /// currently has no effect.
     pub fn allow_parking(&mut self) {
         self.forbid_parking = false;
     }

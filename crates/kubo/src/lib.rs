@@ -71,7 +71,7 @@
 //! use kubo::runtime::Runtime;
 //! use kubo::listener::{Listener, ControllerContext};
 //! use kubo::reconcile::{ReadyReconcile, Reconcile};
-//! use kubo::environment::{RealEnvironment, ObjectRef};
+//! use kubo::environment::RealEnvironment;
 //!
 //! // Wire up the runtime in main():
 //! Runtime::new("my-operator", client, env)
@@ -89,24 +89,36 @@
 //!     const NAME: &'static str = "database";
 //!     const FINALIZER: &'static str = "databases.example.com/cleanup";
 //!
-//!     fn controller(&self, ctx: &ControllerContext<RealEnvironment>) -> Controller<Database> {
-//!         let client = ctx.require::<kube::Client>().clone();
-//!         Controller::new(Api::<Database>::all(client), Config::default())
+//!     // Optional: decorate the framework-provided controller with
+//!     // `.owns()` / `.watches()`. The default implementation returns
+//!     // it unchanged.
+//!     fn controller(
+//!         &self,
+//!         ctx: &ControllerContext<RealEnvironment>,
+//!         ctrl: Controller<Database>,
+//!     ) -> Controller<Database> {
+//!         let client = ctx.require::<kube::Client>();
+//!         ctrl.owns(Api::<Secret>::all(client.clone()), Config::default())
 //!     }
 //!
 //!     fn reconcile<'a>(
 //!         &'a self,
 //!         ctx: &'a ControllerContext<RealEnvironment>,
 //!         obj: Arc<Database>,
+//!         rec: Reconcile<'a, RealEnvironment, Database>,
 //!     ) -> ReadyReconcile<'a, RealEnvironment, Database, DatabaseStatus> {
-//!         Reconcile::new(ctx.env(), obj.clone())
-//!             .ready_reason("Provisioned", "Database and credentials ready")
+//!         rec.ready_reason("Provisioned", "Database and credentials ready")
 //!             .gate(ResolveUpstream { .. })
 //!             .effect(CreateDatabase { .. })
 //!             .effect(CreateCredentialSecret { .. })
 //!             .poll(WaitForReady { .. })
-//!             .status(|state, _prev| DatabaseStatus {
-//!                 connection_url: state.get::<CreateDatabase>().cloned(),
+//!             .status(|state, prev| DatabaseStatus {
+//!                 // Fall back to `prev` so a Wait on an early step never
+//!                 // clobbers a value published on an earlier pass.
+//!                 connection_url: state
+//!                     .get::<CreateDatabase>()
+//!                     .cloned()
+//!                     .or(prev.connection_url.clone()),
 //!             })
 //!     }
 //! }
@@ -190,6 +202,22 @@ pub trait HasConditions {
     fn conditions(&self) -> Vec<Condition>;
 }
 
+/// Per-step context passed to every gate, effect, and poll invocation.
+///
+/// Bundles the three things a step implementation typically needs:
+///
+/// - `object` — the [`ObjectRef`] (namespace + name) of the resource being
+///   reconciled, for constructing references to sibling resources.
+/// - `condition` — the [`ConditionContext`] for building status conditions
+///   with consistent `observedGeneration` (e.g.
+///   `cx.condition.not_ready_condition("Pending", "waiting")`).
+/// - `cr` — the full custom resource `K`, giving steps read access to the
+///   spec without carrying their own clone.
+///
+/// The framework constructs one per reconcile pass and hands a reference to
+/// each step. The `K` type parameter is the CR type declared by the
+/// pipeline, so steps written against a concrete resource (e.g.
+/// `Gate<E, WebService>`) get typed access to `cx.cr.spec`.
 pub struct ReconcileContext<'a, K> {
     pub object: &'a ObjectRef,
     pub condition: &'a ConditionContext,

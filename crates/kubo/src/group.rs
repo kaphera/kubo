@@ -29,9 +29,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use k8s_operator_reconciler::group::Group;
+//! use kubo::group::Group;
+//! use kubo::reconcile::Reconcile;
 //!
-//! Reconcile::new(&env, &cx, &mut conditions)
+//! Reconcile::new(&env, obj)
 //!     .gate(ResolvePostgresDatabase::new(...))
 //!     .group(
 //!         Group::new()
@@ -46,7 +47,8 @@
 //!     )
 //!     .effect(ApplyDeployment::new(&obj))
 //!     .poll(WaitForReady::new(...))
-//!     .run(FINALIZER, obj, |conds, state| { ... })
+//!     .status(|state, _prev| { ... })
+//!     .execute(FINALIZER)
 //!     .await
 //! ```
 

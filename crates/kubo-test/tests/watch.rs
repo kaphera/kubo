@@ -1,4 +1,4 @@
-//! Step 4 gate: `kube::runtime::watcher` observes object lifecycle through the
+//! `kube::runtime::watcher` observes object lifecycle through the
 //! fake API server's streaming watch support.
 //!
 //! This proves that:

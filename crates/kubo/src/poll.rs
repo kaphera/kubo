@@ -20,10 +20,14 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Poll<E> for WaitForDatabaseReady {
+//! impl<E: Environment + Sync> Poll<E, MyResource> for WaitForDatabaseReady {
 //!     type Error = MyError;
 //!
-//!     async fn check(&self, cx: &ReconcileContext, env: &E) -> Result<PollState, Self::Error> {
+//!     async fn check(
+//!         &self,
+//!         cx: &ReconcileContext<MyResource>,
+//!         env: &E,
+//!     ) -> Result<PollState, Self::Error> {
 //!         let db = env.get::<Database>(&ObjectRef::new(&cx.object.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if has_ready_condition(&db) => Ok(PollState::Done),

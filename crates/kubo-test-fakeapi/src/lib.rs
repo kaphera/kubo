@@ -5,7 +5,7 @@
 //! it directly to [`kube::Client::new`] to get a fully real kube-rs client
 //! that talks to the fake instead of a cluster.
 //!
-//! ## Supported operations (Step 4)
+//! ## Supported operations
 //!
 //! - `GET`  namespaced and cluster-scoped objects (200 / 404)
 //! - `GET`  collection (list) — returns all matching objects as a Kubernetes List
@@ -13,7 +13,7 @@
 //!   backed by a per-GVK `tokio::sync::broadcast` channel; future mutations are
 //!   forwarded as `ADDED` / `MODIFIED` / `DELETED` events
 //! - `PATCH` with `application/apply-patch+yaml` — SSA strategic merge with per-field ownership
-//!   tracking and 409 Conflict detection (Step 12)
+//!   tracking and 409 Conflict detection
 //! - `PATCH` with `application/merge-patch+json` — RFC 7396 merge patch
 //! - `PATCH .../status` — isolated status update + history recording
 //! - `DELETE` — finalizer-aware
@@ -219,9 +219,9 @@ pub struct Store {
     watch_senders: HashMap<WatchKey, broadcast::Sender<WatchEventRaw>>,
     /// Seeded RNG for deterministic tie-breaking and probabilistic fault injection.
     ///
-    /// Seeded from [`FakeApiServer::new_seeded`].  Used in Step 9 (fault
-    /// injection) and Step 11 (watch fuzzing) to make randomised choices
-    /// reproducible from a single [`u64`] seed.
+    /// Seeded from [`FakeApiServer::new_seeded`].  Used by fault injection
+    /// and watch fuzzing to make randomised choices reproducible from a
+    /// single [`u64`] seed.
     rng: rand::rngs::StdRng,
     /// Active fault rules consulted before every mutable request (PATCH / DELETE).
     fault_rules: Vec<FaultRule>,

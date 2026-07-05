@@ -1,4 +1,4 @@
-//! Step 10 gate: `#[kubo::property_test]` + direct reconcile.
+//! `#[kubo::property_test]` + direct reconcile.
 //!
 //! Verifies that `DummyListener` satisfies convergence and monotonicity
 //! across arbitrary specs using direct reconcile invocation — no controller

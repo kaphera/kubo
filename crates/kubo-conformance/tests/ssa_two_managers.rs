@@ -1,4 +1,4 @@
-//! Step 12 gate: two field managers conflict on the same spec field.
+//! Two field managers conflict on the same spec field.
 //!
 //! Verifies that the fake API server returns 409 Conflict when a second field
 //! manager (with `force = false`) tries to claim a field already owned by a

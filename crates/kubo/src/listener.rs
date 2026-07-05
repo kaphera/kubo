@@ -104,18 +104,27 @@ where
     ///
     /// Called on every reconcile event. Receives the full `ControllerContext`
     /// so you can pull operator-specific state (HTTP clients, caches, etc.)
-    /// for constructing effects. The object comes from kube-rs's watcher.
+    /// for constructing effects. The object comes from kube-rs's watcher,
+    /// and `rec` is a fresh `Reconcile` constructed by the runtime — chain
+    /// your gates, effects, and polls off it.
     ///
     /// Returns a fully-configured pipeline with status builder attached
     /// (via `.status()`). The Runtime calls `.execute(FINALIZER)` on it.
     ///
     /// ```ignore
-    /// fn reconcile<'a>(&self, ctx: &'a ControllerContext<E>, obj: Arc<R>) -> ... {
-    ///     Reconcile::new(ctx.env(), obj)
-    ///         .effect(CreateDatabase { .. })
+    /// fn reconcile<'a>(
+    ///     &'a self,
+    ///     ctx: &'a ControllerContext<E>,
+    ///     obj: Arc<R>,
+    ///     rec: Reconcile<'a, E, R>,
+    /// ) -> ReadyReconcile<'a, E, R, Self::Status> {
+    ///     rec.effect(CreateDatabase { .. })
     ///         .poll(WaitForReady { .. })
-    ///         .status(|state, _prev| MyStatus {
-    ///             database_url: state.get::<CreateDatabase>().cloned(),
+    ///         .status(|state, prev| MyStatus {
+    ///             database_url: state
+    ///                 .get::<CreateDatabase>()
+    ///                 .cloned()
+    ///                 .or(prev.database_url.clone()),
     ///         })
     /// }
     /// ```

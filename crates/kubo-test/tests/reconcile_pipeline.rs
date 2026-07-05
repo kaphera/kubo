@@ -1,4 +1,4 @@
-//! Step 3 gate: a `Reconcile` pipeline runs end-to-end against the fake API server.
+//! A `Reconcile` pipeline runs end-to-end against the fake API server.
 //!
 //! This exercises the full `Reconcile::execute` path — finalizer management,
 //! status patching, and the terminal Ready condition — without a real cluster.

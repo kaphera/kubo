@@ -1,4 +1,4 @@
-//! Step 2 gate: typed objects round-trip through the fake API server.
+//! Typed objects round-trip through the fake API server.
 //!
 //! Every assertion goes from `kube::Api<DummyResource>` → hyper request →
 //! `tower::Service` → in-memory store → hyper response → deserialized struct.

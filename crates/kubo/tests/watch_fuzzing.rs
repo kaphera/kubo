@@ -1,4 +1,4 @@
-//! Step 11 gate: watch fuzzing + concurrent reconcile scenario test.
+//! Watch fuzzing + concurrent reconcile scenario test.
 //!
 //! Verifies that `DummyListener` converges correctly across 128 seeds even when
 //! watch events for multiple objects arrive in a shuffled order.  Each seed
@@ -12,8 +12,8 @@
 //!
 //! Most operator bugs in production come from "I assumed event A would arrive
 //! before event B".  Watch fuzzing makes those assumptions surface
-//! deterministically, and shipping it here means every controller migrated
-//! from step 13 onwards is forced to tolerate event reordering.
+//! deterministically, so every controller built on the framework is forced
+//! to tolerate event reordering.
 
 use std::time::Duration;
 

@@ -13,7 +13,12 @@
 //!
 //! ```ignore
 //! // In your effect's apply method:
-//! async fn apply(&self, env: &E, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
+//! async fn apply(
+//!     &self,
+//!     cx: &ReconcileContext<MyResource>,
+//!     env: &E,
+//!     state: &State,
+//! ) -> Result<EffectOutcome<String>, Self::Error> {
 //!     let upstream_url = state.require::<ResolveDatabase>()?;
 //!     // Use upstream_url to configure this effect...
 //!     Ok(EffectOutcome::Done(format!("{upstream_url}/my-table")))

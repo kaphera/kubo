@@ -14,7 +14,6 @@
 //! struct ResolveDatabase {
 //!     name: String,
 //!     namespace: String,
-//!     cx: ConditionContext,
 //! }
 //!
 //! impl StateKey for ResolveDatabase {
@@ -22,15 +21,19 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Gate<E> for ResolveDatabase {
+//! impl<E: Environment + Sync> Gate<E, MyResource> for ResolveDatabase {
 //!     type Error = MyError;
 //!
-//!     async fn evaluate(&self, env: &E) -> Result<Outcome<String>, Self::Error> {
+//!     async fn evaluate(
+//!         &self,
+//!         cx: &ReconcileContext<MyResource>,
+//!         env: &E,
+//!     ) -> Result<Outcome<String>, Self::Error> {
 //!         let db = env.get::<Database>(&ObjectRef::new(&self.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if is_ready(&db) => Ok(Outcome::Pass(db.status.url.unwrap())),
 //!             _ => Ok(Outcome::Wait {
-//!                 condition: self.cx.not_ready_condition("DatabasePending", "waiting for database"),
+//!                 condition: cx.condition.not_ready_condition("DatabasePending", "waiting for database"),
 //!                 backoff: Box::new(Fixed::new(Duration::from_secs(10))),
 //!             }),
 //!         }

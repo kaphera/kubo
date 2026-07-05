@@ -1,7 +1,6 @@
-//! Step 6 gate: property assertions over a real controller tick history.
+//! Property assertions over a real controller tick history.
 //!
-//! Migrates the `properties` module from `kubo::testing` into `kubo_test` and
-//! verifies that `assert_converges` and `assert_monotonic` correctly evaluate
+//! Verifies that `assert_converges` and `assert_monotonic` correctly evaluate
 //! a [`DummyListener`] tick sequence collected from a running [`World`].
 //!
 //! The test uses paused time so the clock-advance assertion is deterministic

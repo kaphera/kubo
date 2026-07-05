@@ -1,4 +1,4 @@
-//! Step 7 gate: `#[kubo::test]` macro with single- and multi-world forms.
+//! `#[kubo::test]` macro with single- and multi-world forms.
 //!
 //! Verifies that:
 //! - The macro correctly wraps an async function in paused-time tokio.

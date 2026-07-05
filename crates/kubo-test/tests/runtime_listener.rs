@@ -1,4 +1,4 @@
-//! Step 5 gate: registered listeners reconcile in response to object lifecycle
+//! Registered listeners reconcile in response to object lifecycle
 //! events when running under a paused-time tokio runtime.
 //!
 //! These tests verify that:

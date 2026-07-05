@@ -29,16 +29,25 @@
 //! }
 //!
 //! #[async_trait]
-//! impl Effect<E> for CreateVaultMount {
+//! impl<E: Environment + Sync> Effect<E, MyResource> for CreateVaultMount {
 //!     type Error = MyError;
 //!
-//!     async fn apply(&self, env: &E, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
+//!     async fn apply(
+//!         &self,
+//!         cx: &ReconcileContext<MyResource>,
+//!         env: &E,
+//!         state: &State,
+//!     ) -> Result<EffectOutcome<String>, Self::Error> {
 //!         let vault_addr = state.require::<ResolveVaultInstance>()?;
 //!         // ... create the mount via Vault API ...
 //!         Ok(EffectOutcome::Done(format!("{}/{}/kv", self.namespace, self.name)))
 //!     }
 //!
-//!     async fn cleanup(&self, env: &E) -> Result<CleanupAction, Self::Error> {
+//!     async fn cleanup(
+//!         &self,
+//!         cx: &ReconcileContext<MyResource>,
+//!         env: &E,
+//!     ) -> Result<CleanupAction, Self::Error> {
 //!         // ... delete the mount via Vault API ...
 //!         Ok(CleanupAction::Done)
 //!     }

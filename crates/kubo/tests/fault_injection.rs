@@ -1,4 +1,4 @@
-//! Step 9 gate: fault injection.
+//! Fault injection.
 //!
 //! Verifies that a controller satisfies the convergence and monotonicity
 //! properties even when the fake API server randomly returns 409 Conflict
