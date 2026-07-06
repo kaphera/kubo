@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Integration test: VaultKvMount controller pattern on the framework.
 //!
 //! This validates that a realistic multi-step controller (gate → effect → effect)

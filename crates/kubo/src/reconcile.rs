@@ -336,8 +336,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     }
 
     /// Backward-compatible alias for [`execute`](Self::execute).
-    ///
-    /// Prefer `execute` in new code.
+    #[deprecated = "prefer `execute` in new code."]
     pub async fn run<T, F>(
         self,
         finalizer_name: &str,
