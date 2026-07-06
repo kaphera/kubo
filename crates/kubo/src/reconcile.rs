@@ -458,15 +458,15 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
             patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await?;
         }
 
-        if let Some(key) = rotation_key {
-            if let Err(e) = env.remove_annotation::<R>(obj_ref, key).await {
-                warn!(
-                    error = %e,
-                    annotation = %key,
-                    obj = %obj_ref,
-                    "Failed to remove rotation annotation (non-fatal)"
-                );
-            }
+        if let Some(key) = rotation_key
+            && let Err(e) = env.remove_annotation::<R>(obj_ref, key).await
+        {
+            warn!(
+                error = %e,
+                annotation = %key,
+                obj = %obj_ref,
+                "Failed to remove rotation annotation (non-fatal)"
+            );
         }
 
         Ok(Action::requeue(self.steady_interval))
@@ -536,6 +536,8 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     }
 }
 
+type StatusBuilder<'r, T> = Box<dyn Fn(&State, &T) -> T + Send + Sync + 'r>;
+
 /// A `Reconcile` pipeline with its status builder already attached.
 ///
 /// Produced by [`Reconcile::status()`]. Call `.execute(finalizer)` or
@@ -545,7 +547,7 @@ where
     T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
 {
     inner: Reconcile<'r, E, R>,
-    build_status: Box<dyn Fn(&State, &T) -> T + Send + Sync + 'r>,
+    build_status: StatusBuilder<'r, T>,
 }
 
 impl<'r, E: Environment + Sync, R: EnvResource + HasConditions, T> ReadyReconcile<'r, E, R, T>

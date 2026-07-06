@@ -241,6 +241,14 @@ pub struct Group<V, E: Environment + Sync, K: Send + Sync = ()> {
     _phantom: PhantomData<K>,
 }
 
+impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static> Default
+    for Group<V, E, K>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static>
     Group<V, E, K>
 {

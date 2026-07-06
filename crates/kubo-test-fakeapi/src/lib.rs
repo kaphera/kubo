@@ -369,17 +369,15 @@ impl Store {
     ) -> Result<Value, SsaConflict> {
         let paths = extract_field_paths(&patch, "");
 
-        if !force {
-            if let Some(ownership) = self.field_ownership.get(&key) {
-                for path in &paths {
-                    if let Some(owner) = ownership.get(path) {
-                        if owner != manager {
-                            return Err(SsaConflict {
-                                field: path.clone(),
-                                owner: owner.clone(),
-                            });
-                        }
-                    }
+        if !force && let Some(ownership) = self.field_ownership.get(&key) {
+            for path in &paths {
+                if let Some(owner) = ownership.get(path)
+                    && owner != manager
+                {
+                    return Err(SsaConflict {
+                        field: path.clone(),
+                        owner: owner.clone(),
+                    });
                 }
             }
         }
@@ -446,7 +444,7 @@ impl Store {
                 k.group == group
                     && k.version == version
                     && k.resource == resource
-                    && namespace.map_or(true, |ns| k.namespace.as_deref() == Some(ns))
+                    && namespace.is_none_or(|ns| k.namespace.as_deref() == Some(ns))
             })
             .map(|(_, v)| v.clone())
             .collect()
@@ -730,7 +728,7 @@ impl FakeApiServer {
                 k.group == group
                     && k.version == version
                     && k.resource == resource
-                    && namespace.map_or(true, |ns| k.namespace.as_deref() == Some(ns))
+                    && namespace.is_none_or(|ns| k.namespace.as_deref() == Some(ns))
             })
             .map(|(k, _)| (k.namespace.clone().unwrap_or_default(), k.name.clone()))
             .collect()

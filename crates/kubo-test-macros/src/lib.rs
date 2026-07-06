@@ -121,13 +121,13 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut binding_stmts: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for (i, arg) in input.sig.inputs.iter().enumerate() {
-        if let FnArg::Typed(pat_type) = arg {
-            if is_world_ref_mut(&pat_type.ty) {
-                let var = proc_macro2::Ident::new(&format!("__kubo_world_{i}"), Span::call_site());
-                let pat = &pat_type.pat;
-                world_vars.push(var.clone());
-                binding_stmts.push(quote! { let #pat = &mut #var; });
-            }
+        if let FnArg::Typed(pat_type) = arg
+            && is_world_ref_mut(&pat_type.ty)
+        {
+            let var = proc_macro2::Ident::new(&format!("__kubo_world_{i}"), Span::call_site());
+            let pat = &pat_type.pat;
+            world_vars.push(var.clone());
+            binding_stmts.push(quote! { let #pat = &mut #var; });
         }
     }
 
@@ -148,7 +148,7 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
             .as_ref()
             .map(|s| s.len() > 1)
             .unwrap_or(false)
-        || default_iterations_opt.map_or(false, |n| n > 1);
+        || default_iterations_opt.is_some_and(|n| n > 1);
 
     // Inline RAII guard token stream (reused in both paths).
     let guard_struct = quote! {
@@ -297,17 +297,16 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Returns `true` when `ty` is `&mut SomePath::World` (matches on the final
 /// path segment being `World`).
 fn is_world_ref_mut(ty: &Type) -> bool {
-    if let Type::Reference(ref_ty) = ty {
-        if ref_ty.mutability.is_some() {
-            if let Type::Path(path) = &*ref_ty.elem {
-                return path
-                    .path
-                    .segments
-                    .last()
-                    .map(|s| s.ident == "World")
-                    .unwrap_or(false);
-            }
-        }
+    if let Type::Reference(ref_ty) = ty
+        && ref_ty.mutability.is_some()
+        && let Type::Path(path) = &*ref_ty.elem
+    {
+        return path
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident == "World")
+            .unwrap_or(false);
     }
     false
 }
