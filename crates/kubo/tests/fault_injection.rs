@@ -10,7 +10,8 @@
 
 use std::time::Duration;
 
-use kubo_test::{
+use kubo::test as kubo_test;
+use kubo::testing::{
     Fault,
     fixtures::{DummyListener, DummyResource, DummyStatus, make_dummy},
     properties::assert_monotonic,
@@ -28,7 +29,7 @@ use kubo_test::{
 /// - `world.condition::<DummyResource>("ns", "obj-1", "Ready")` — convergence.
 /// - `assert_monotonic(..., |s| s.touched.is_some(), "touched")` — monotonicity:
 ///   once the controller records a status patch, `touched` never regresses.
-#[kubo::test(iterations = 32)]
+#[kubo_test(iterations = 32)]
 async fn dummy_listener_survives_transient_conflicts(world: &mut World) {
     world.seed_listener(DummyListener);
 

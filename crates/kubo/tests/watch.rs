@@ -11,7 +11,7 @@
 
 use futures::StreamExt;
 use kube::{Api, runtime::watcher};
-use kubo_test::{
+use kubo::testing::{
     World,
     fixtures::{DummyResource, dummy},
 };

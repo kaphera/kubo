@@ -286,12 +286,12 @@ Reconcile::new(&env, obj)
 assert!(env.has::<Secret>(&ObjectRef::new("ns", "my-secret")));
 ```
 
-### Property-based testing with `kubo-test`
+### Property-based testing with `kubo::testing`
 
-The `kubo-test` crate ships a `World` harness that drives a listener through arbitrary create/delete sequences with paused time, plus a library of composable property assertions over the recorded status-tick history. Properties compose: a typical controller test asserts several over the same tick sequence.
+The `test-support` feature on `kubo` ships a `World` harness that drives a listener through arbitrary create/delete sequences with paused time, plus a library of composable property assertions over the recorded status-tick history. Properties compose: a typical controller test asserts several over the same tick sequence.
 
 ```rust
-use kubo_test::{
+use kubo::testing::{
     World,
     fixtures::{DummyListener, DummyResource, DummyStatus, dummy},
     properties::{assert_converges, assert_monotonic, is_ready},

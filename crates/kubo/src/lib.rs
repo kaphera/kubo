@@ -62,7 +62,7 @@
 //! All Kubernetes interactions go through the [`Environment`](environment::Environment)
 //! trait. The framework ships a [`TestEnvironment`](testing::TestEnvironment)
 //! that runs entirely in-memory — no cluster needed. Combined with the
-//! [`kubo_test::properties`] module, you can write property-based assertions
+//! [`testing::properties`] module, you can write property-based assertions
 //! over your controller's status progression without any infrastructure.
 //!
 //! # Quick Example
@@ -154,14 +154,13 @@ pub use kubo_test_macros::test;
 pub use kubo_test_macros::property_test;
 
 pub use async_trait::async_trait;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 use kube::ResourceExt;
 
-pub use crate::environment::RealEnvironment;
 use crate::{
     environment::{EnvResource, EnvironmentError, ObjectRef},
     utils::ConditionContext,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 
 /// Top-level error returned by individual pipeline steps (gates, effects, polls).
 ///

@@ -1,7 +1,12 @@
 [package]
 name = "kubo-conformance"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
 
 [features]
 # Enable this feature when running against a real k3d cluster.
@@ -9,7 +14,7 @@ edition = "2024"
 k3d = ["dep:kube", "dep:k8s-openapi"]
 
 [dependencies]
-kubo-test-fakeapi = { path = "../kubo-test-fakeapi" }
+kubo-test-fakeapi = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }

@@ -8,8 +8,8 @@ use kube::{
     Api, CustomResourceExt,
     api::{Patch, PatchParams},
 };
-use kubo_test::fixtures::DummyResource;
-use kubo_test::{World, fixtures::dummy};
+use kubo::testing::fixtures::DummyResource;
+use kubo::testing::{World, fixtures::dummy};
 
 #[tokio::test]
 async fn get_opt_returns_none_for_missing_object() {

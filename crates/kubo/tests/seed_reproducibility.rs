@@ -1,13 +1,14 @@
 //! Seed reproducibility.
 //!
 //! Verifies:
-//! - `#[kubo::test(iterations = N)]` runs the test body N times with
+//! - `#[kubo_test(iterations = N)]` runs the test body N times with
 //!   deterministic seeds `0..N`.
 //! - `World::seed()` returns the seed used for the current run.
 //! - A deliberately flaky test fails at a known seed and prints the canonical
 //!   "rerun from this seed" message (manual gate; passes in normal CI).
 
-use kubo_test::fixtures::{DummyListener, DummyResource, dummy};
+use kubo::testing::fixtures::{DummyListener, DummyResource, dummy};
+use kubo::test as kubo_test;
 
 /// Property check: for all seeds 0..64 the `DummyListener` converges.
 ///
@@ -15,7 +16,7 @@ use kubo_test::fixtures::{DummyListener, DummyResource, dummy};
 /// iteration receives a fresh `World` with a distinct seed; since
 /// `DummyListener` is deterministic and always sets `Ready=True`, all 64
 /// must pass.
-#[kubo::test(iterations = 64)]
+#[kubo_test(iterations = 64)]
 async fn dummy_listener_is_reproducible(world: &mut World) {
     world.seed_listener(DummyListener);
     world.create(dummy("obj-1", "ns", "hello")).await;
@@ -41,7 +42,7 @@ async fn dummy_listener_is_reproducible(world: &mut World) {
 /// ```sh
 /// SEED=7193847216284 cargo test --workspace flaky_regression -- --nocapture
 /// ```
-#[kubo::test]
+#[kubo_test]
 async fn flaky_regression(world: &mut World) {
     // At this specific seed, deliberately fail to exercise the seed-reporting
     // mechanism.  With any other seed (including the default 0) the test

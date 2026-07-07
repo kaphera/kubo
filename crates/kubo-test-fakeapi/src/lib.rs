@@ -711,7 +711,7 @@ impl FakeApiServer {
     /// Return `(namespace, name)` pairs for every object whose GVR matches
     /// `(group, version, resource)`, optionally restricted to `namespace`.
     ///
-    /// Used by [`World::list_refs`](kubo_test::World::list_refs) to enumerate all
+    /// Used by [`World::list_refs`](kubo::testing::World::list_refs) to enumerate all
     /// objects of a given type.
     pub fn list_refs(
         &self,

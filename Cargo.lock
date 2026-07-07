@@ -901,7 +901,8 @@ dependencies = [
  "gethostname",
  "k8s-openapi",
  "kube",
- "kubo-test",
+ "kubo",
+ "kubo-test-fakeapi",
  "kubo-test-macros",
  "proptest",
  "schemars",
@@ -926,23 +927,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
-]
-
-[[package]]
-name = "kubo-test"
-version = "0.1.0"
-dependencies = [
- "futures",
- "k8s-openapi",
- "kube",
- "kubo",
- "kubo-test-fakeapi",
- "kubo-test-macros",
- "proptest",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

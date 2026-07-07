@@ -1,4 +1,4 @@
-//! `kubo-test` — simulation runtime and test utilities for kubo controllers.
+//! `kubo::testing` — simulation runtime and test utilities for kubo controllers.
 //!
 //! The centrepiece is [`World`]: a simulated Kubernetes cluster backed by
 //! [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer).  Each `World` owns a
@@ -26,10 +26,6 @@
 //!   `assert_no_leaks`) for checking temporal invariants over status tick
 //!   histories.
 
-pub mod fixtures;
-pub mod properties;
-pub mod strategies;
-
 use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use futures::StreamExt as _;
@@ -40,20 +36,18 @@ use kube::{
 };
 use serde::de::DeserializeOwned;
 
-use kubo::{
+use crate::{
     HasConditions,
     environment::EnvResource,
     extensions::Extensions,
     listener::{ControllerContext, Listener},
     reconcile::Reconcile,
+    testing::Op,
 };
-use kubo_test_fakeapi::FakeApiServer;
+use kubo_test_fakeapi::{FakeApiServer, Fault, FaultBuilder};
 
-pub use kubo::environment::RealEnvironment;
-pub use kubo::reconcile::ReconcileError;
-pub use kubo_test_fakeapi::{Fault, FaultBuilder};
-
-pub use strategies::Op;
+use crate::environment::RealEnvironment;
+use crate::reconcile::ReconcileError;
 
 // ── ObjRef ────────────────────────────────────────────────────────────────────
 
@@ -349,7 +343,7 @@ impl World {
     ///
     /// ```rust,no_run
     /// # use std::time::Duration;
-    /// # async fn example(world: &kubo_test::World) {
+    /// # async fn example(world: &kubo::testing::World) {
     /// // Error requeue = 5 s; step = 6 s to ensure each retry fires.
     /// // 20 × 6 s = 120 virtual seconds.
     /// world.advance_stepping(Duration::from_secs(120), Duration::from_secs(6)).await;

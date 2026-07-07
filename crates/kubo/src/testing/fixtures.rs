@@ -1,4 +1,4 @@
-//! Test fixtures — typed CRDs used by kubo-test integration tests.
+//! Test fixtures — typed CRDs used by kubo testing integration tests.
 //!
 //! `DummyResource` is a minimal custom resource that mirrors the shape of real
 //! operator CRDs (spec field, optional status, conditions) without depending on
@@ -18,7 +18,7 @@ use kube::{CustomResource, api::ObjectMeta};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use kubo::{
+use crate::{
     HasConditions,
     environment::RealEnvironment,
     listener::{ControllerContext, Listener},
@@ -171,10 +171,10 @@ impl Listener<RealEnvironment, DummyResource> for BackoffDummyListener {
 
 // ── ListenerResource impls ────────────────────────────────────────────────────
 
-impl crate::ListenerResource for DummyListener {
+impl crate::testing::ListenerResource for DummyListener {
     type Resource = DummyResource;
 }
 
-impl crate::ListenerResource for BackoffDummyListener {
+impl crate::testing::ListenerResource for BackoffDummyListener {
     type Resource = DummyResource;
 }

@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use kubo_test::{
+use kubo::testing::{
     World,
     fixtures::{BackoffDummyListener, DummyListener, DummyResource, DummyStatus, dummy},
 };

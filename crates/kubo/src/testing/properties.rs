@@ -1,7 +1,7 @@
 //! Reusable property assertions over status tick histories.
 //!
 //! Each function takes a `&[S]` (the tick sequence from
-//! [`World::status_ticks`](crate::World::status_ticks))
+//! [`World::status_ticks`](crate::testing::World::status_ticks))
 //! and a predicate, and panics with a descriptive message if the property
 //! is violated.
 //!
@@ -35,10 +35,10 @@
 
 use std::fmt;
 
+use crate::environment::EnvResource;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-use kubo::environment::EnvResource;
 
-use crate::World;
+use crate::testing::World;
 
 /// A property check result.
 pub type PropertyResult = Result<(), PropertyViolation>;

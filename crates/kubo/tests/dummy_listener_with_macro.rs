@@ -1,4 +1,4 @@
-//! `#[kubo::test]` macro with single- and multi-world forms.
+//! `#[kubo_test]` macro with single- and multi-world forms.
 //!
 //! Verifies that:
 //! - The macro correctly wraps an async function in paused-time tokio.
@@ -6,9 +6,10 @@
 //! - A single-world test converges a `DummyResource` to `Ready=True`.
 //! - A two-world test drives independent clusters on the same runtime.
 
-use kubo_test::fixtures::{DummyListener, DummyResource, dummy};
+use kubo::testing::fixtures::{DummyListener, DummyResource, dummy};
+use kubo::test as kubo_test;
 
-#[kubo::test]
+#[kubo_test]
 async fn converges(world: &mut World) {
     world.seed_listener::<DummyResource, _>(DummyListener);
     world.create(dummy("obj-1", "ns", "hello")).await;
@@ -19,7 +20,7 @@ async fn converges(world: &mut World) {
     );
 }
 
-#[kubo::test]
+#[kubo_test]
 async fn two_clusters_share_one_simulation(world_a: &mut World, world_b: &mut World) {
     world_a.seed_listener::<DummyResource, _>(DummyListener);
     world_b.seed_listener::<DummyResource, _>(DummyListener);

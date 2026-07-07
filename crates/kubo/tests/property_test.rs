@@ -1,5 +1,3 @@
-//! `#[kubo::property_test]` + direct reconcile.
-//!
 //! Verifies that `DummyListener` satisfies convergence and monotonicity
 //! across arbitrary specs using direct reconcile invocation — no controller
 //! loop, no watcher, no Tower stack. Each case calls `world.reconcile::<L>()`
@@ -11,11 +9,12 @@
 //! A single `SEED=N` environment variable reproduces both the proptest case
 //! sequence and the fake API server's RNG state byte-for-byte.
 
-use kubo_test::{
+use kubo::testing::{
     fixtures::{DummyListener, DummyStatus, dummy_from_spec},
     properties::{assert_converges, assert_monotonic, is_ready},
     strategies::any_dummy_spec,
 };
+use kubo::property_test as kubo_property_test;
 
 /// Property test: `DummyListener` converges and is monotonic on a single object
 /// with a strategy-generated spec, using direct reconcile (Layer 2).
@@ -23,7 +22,7 @@ use kubo_test::{
 /// For the seeded object:
 /// - After two reconcile passes status must have `Ready=True` (convergence).
 /// - `touched` must not regress to `None` after it is first set (monotonicity).
-#[kubo::property_test]
+#[kubo_property_test]
 async fn dummy_listener_well_behaved(
     world: &mut World,
     #[strategy(any_dummy_spec())] spec: DummySpec,
@@ -47,7 +46,7 @@ async fn dummy_listener_well_behaved(
 /// This case is trivially true for `DummyListener` but acts as a regression
 /// guard: if someone changes the reconcile function to require a prior status,
 /// this test will catch it at Layer 2 without needing a controller loop.
-#[kubo::property_test]
+#[kubo_property_test]
 async fn dummy_listener_converges_from_blank(
     world: &mut World,
     #[strategy(any_dummy_spec())] spec: DummySpec,

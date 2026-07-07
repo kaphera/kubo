@@ -8,13 +8,13 @@
 use kube::api::ObjectMeta;
 use proptest::prelude::*;
 
-use crate::fixtures::{DummyResource, DummySpec};
+use crate::testing::fixtures::{DummyResource, DummySpec};
 
 // ── Op ────────────────────────────────────────────────────────────────────────
 
 /// A single operation on a simulated Kubernetes cluster.
 ///
-/// Used with [`World::apply_op`](crate::World::apply_op) to drive a listener
+/// Used with [`World::apply_op`](crate::testing::World::apply_op) to drive a listener
 /// through an arbitrary sequence of creates and deletes during a property test.
 #[derive(Clone, Debug)]
 pub enum Op<T> {
@@ -75,7 +75,7 @@ pub fn op_sequence(max_ops: usize) -> impl Strategy<Value = Vec<Op<DummyResource
 /// Like [`op_sequence`] but intended for use alongside fault injection.
 ///
 /// Currently identical to [`op_sequence`]; fault rates are configured
-/// separately via [`World::fault`](crate::World::fault).  This alias exists so
+/// separately via [`World::fault`](crate::testing::World::fault).  This alias exists so
 /// that test authors can signal intent and future steps can bias the sequence
 /// towards operations that exercise fault paths (e.g. PATCH-heavy sequences).
 pub fn faulty_op_sequence(max_ops: usize) -> impl Strategy<Value = Vec<Op<DummyResource>>> {

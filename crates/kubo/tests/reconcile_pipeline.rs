@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use kubo::reconcile::Reconcile;
-use kubo_test::{
+use kubo::testing::{
     World,
     fixtures::{DummyResource, DummyStatus, dummy},
 };

@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use kubo_test::{
+use kubo::testing::{
     fixtures::{DummyListener, DummyResource, DummyStatus, make_dummy},
     properties::{assert_converges, is_ready},
 };

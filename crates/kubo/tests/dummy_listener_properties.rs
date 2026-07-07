@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use kube::CustomResourceExt as _;
-use kubo_test::{
+use kubo::testing::{
     World,
     fixtures::{DummyListener, DummyResource, DummyStatus, dummy},
     properties::{assert_converges, assert_monotonic, is_ready},

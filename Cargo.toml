@@ -3,12 +3,22 @@ resolver = "3"
 members = [
     "crates/kubo",
     "crates/kubo-conformance",
-    "crates/kubo-test",
     "crates/kubo-test-fakeapi",
     "crates/kubo-test-macros",
 ]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/kaphera/kubo"
+homepage = "https://github.com/kaphera/kubo"
+
 [workspace.dependencies]
+kubo = { version = "0.1.0", path = "crates/kubo" }
+kubo-test-fakeapi = { version = "0.1.0", path = "crates/kubo-test-fakeapi" }
+kubo-test-macros = { version = "0.1.0", path = "crates/kubo-test-macros" }
 anyhow = "1"
 async-trait = "0.1.89"
 bytes = "1"

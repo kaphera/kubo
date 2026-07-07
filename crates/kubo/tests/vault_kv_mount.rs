@@ -1016,7 +1016,7 @@ async fn status_ticks_show_causal_progression() {
     let obj_ref = ObjectRef::new("test-ns", "my-kvm");
     let ticks: Vec<VaultKvMountStatus> = env.status_ticks(&obj_ref);
 
-    use kubo_test::properties::*;
+    use kubo::testing::properties::*;
 
     // Property: resolved_instance_ref is monotonic (once set, never unset).
     assert_monotonic(
