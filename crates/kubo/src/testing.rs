@@ -1,12 +1,10 @@
 //! Property-based testing utilities for reconcile pipelines.
 //!
-//! The [`TestEnvironment`] lets you run a full `Reconcile` pipeline against an
-//! in-memory store — no cluster needed.
-//!
-//! For full controller-loop simulation, use [`World`]: it owns a
-//! [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer) and a real `kube::Client`
-//! wired to it, so every reconcile pipeline the test drives runs the same
-//! production code paths it would in a pod.
+//! The [`World`] type runs a full `Reconcile` pipeline against an
+//! in-memory store backed by [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer) —
+//! no cluster needed.  In production, a `KubeHandle` wraps a real `kube::Client`;
+//! in tests, you construct one from `World::client()` and run the same
+//! production code paths through the fake.
 //!
 //! Property assertion functions live in [`properties`](self::properties).
 //! Import them from there:
@@ -20,14 +18,10 @@
 //! assert_converges(&ticks, |s| is_ready(&s.conditions), "reaches Ready");
 //! ```
 
-pub mod test_environment;
-
 pub mod fixtures;
 pub mod properties;
 pub mod strategies;
 pub mod world;
-
-pub use test_environment::{StatusPatch, TestEnvironment};
 
 pub use world::{ListenerResource, ObjRef, World, WorldBuilder};
 

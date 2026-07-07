@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     HasConditions,
-    environment::RealEnvironment,
     listener::{ControllerContext, Listener},
     reconcile::{ReadyReconcile, Reconcile},
 };
@@ -120,17 +119,17 @@ impl HasConditions for DummyResource {
 #[derive(Default)]
 pub struct DummyListener;
 
-impl Listener<RealEnvironment, DummyResource> for DummyListener {
+impl Listener<DummyResource> for DummyListener {
     type Status = DummyStatus;
     const NAME: &'static str = "dummy-listener";
     const FINALIZER: &'static str = "dummyresources.test.kubo.dev/cleanup";
 
     fn reconcile<'a>(
         &'a self,
-        _ctx: &'a ControllerContext<RealEnvironment>,
+        _ctx: &'a ControllerContext,
         _obj: Arc<DummyResource>,
-        rec: Reconcile<'a, RealEnvironment, DummyResource>,
-    ) -> ReadyReconcile<'a, RealEnvironment, DummyResource, DummyStatus> {
+        rec: Reconcile<'a, DummyResource>,
+    ) -> ReadyReconcile<'a, DummyResource, DummyStatus> {
         rec.status(|_state, _prev: &DummyStatus| DummyStatus {
             ready: true,
             touched: Some("reconciled".into()),
@@ -149,17 +148,17 @@ impl Listener<RealEnvironment, DummyResource> for DummyListener {
 #[derive(Default)]
 pub struct BackoffDummyListener;
 
-impl Listener<RealEnvironment, DummyResource> for BackoffDummyListener {
+impl Listener<DummyResource> for BackoffDummyListener {
     type Status = DummyStatus;
     const NAME: &'static str = "backoff-dummy-listener";
     const FINALIZER: &'static str = "dummyresources.test.kubo.dev/cleanup";
 
     fn reconcile<'a>(
         &'a self,
-        _ctx: &'a ControllerContext<RealEnvironment>,
+        _ctx: &'a ControllerContext,
         _obj: Arc<DummyResource>,
-        rec: Reconcile<'a, RealEnvironment, DummyResource>,
-    ) -> ReadyReconcile<'a, RealEnvironment, DummyResource, DummyStatus> {
+        rec: Reconcile<'a, DummyResource>,
+    ) -> ReadyReconcile<'a, DummyResource, DummyStatus> {
         rec.steady_state_interval(Duration::from_secs(30))
             .status(|_state, _prev: &DummyStatus| DummyStatus {
                 ready: true,

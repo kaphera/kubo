@@ -10,7 +10,7 @@ use crate::{
     HasConditions, ReconcileContext, ReconcilerError,
     backoff::{Backoff, BackoffContext},
     effect::Effect,
-    environment::{EnvResource, Environment, EnvironmentError, ObjectRef},
+    environment::{EnvResource, EnvironmentError, KubeHandle, ObjectRef},
     gate::Gate,
     group::Group,
     poll::Poll,
@@ -53,13 +53,14 @@ pub enum ReconcileError {
 /// pipeline based on the object's deletion timestamp, and patches
 /// status after every step (only when changed).
 ///
-/// All Kubernetes interactions go through the [`Environment`] trait,
-/// making the entire pipeline unit-testable without a cluster.
+/// All Kubernetes interactions go through [`KubeHandle`], which wraps a
+/// `kube::Client`. Swap the client for a [`kubo_test::World`]-backed one
+/// to run the same pipeline against the fake API server in tests.
 ///
 /// ```ignore
 /// use kubo::reconcile::Reconcile;
 ///
-/// Reconcile::new(ctx.env(), obj.clone())
+/// Reconcile::new(ctx.ops(), obj.clone())
 ///     .ready_reason("Provisioned", "All resources ready")
 ///     .gate(MyGate { .. })
 ///     .effect(CreateExternalThing { .. })
@@ -71,28 +72,28 @@ pub enum ReconcileError {
 ///     .execute(FINALIZER)
 ///     .await
 /// ```
-pub struct Reconcile<'r, E: Environment + Sync, R: EnvResource + HasConditions> {
-    env: &'r E,
+pub struct Reconcile<'r, R: EnvResource + HasConditions> {
+    ops: &'r KubeHandle,
     cx: ConditionContext,
     conditions: Vec<Condition>,
     obj: Arc<R>,
-    apply_steps: Vec<Box<dyn ApplyStep<E, R> + 'r>>,
-    cleanup_steps: Vec<Box<dyn CleanableStep<E, R> + 'r>>,
+    apply_steps: Vec<Box<dyn ApplyStep<R> + 'r>>,
+    cleanup_steps: Vec<Box<dyn CleanableStep<R> + 'r>>,
     steady_interval: Duration,
     rotation_annotation: Option<&'r str>,
 }
 
-impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E, R> {
+impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
     /// Start a reconcile pass.
     ///
     /// The framework derives `generation` and initial `conditions` from the
     /// object automatically. Use [`ready_reason`](Self::ready_reason) to
     /// configure the terminal Ready condition.
-    pub fn new(env: &'r E, obj: Arc<R>) -> Self {
+    pub fn new(ops: &'r KubeHandle, obj: Arc<R>) -> Self {
         let generation = obj.meta().generation.unwrap_or(0);
         let conditions = obj.conditions();
         Self {
-            env,
+            ops,
             cx: ConditionContext::new(generation),
             conditions,
             obj,
@@ -117,7 +118,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// `state.get::<G>()`.
     pub fn gate<G>(mut self, gate: G) -> Self
     where
-        G: Gate<E, R> + StateKey + Send + Sync + 'r,
+        G: Gate<R> + StateKey + Send + Sync + 'r,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
     {
@@ -131,7 +132,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// in a single pipeline (e.g. resolving two different VaultInstances).
     pub fn gate_as<K, G>(mut self, gate: G) -> Self
     where
-        G: Gate<E, R> + Send + Sync + 'r,
+        G: Gate<R> + Send + Sync + 'r,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
         K: StateKey<Value = <G as StateKey>::Value> + Send + Sync + 'r,
@@ -147,7 +148,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// but whose output is not needed downstream.
     pub fn guard<G>(mut self, gate: G) -> Self
     where
-        G: Gate<E, R> + Send + Sync + 'r,
+        G: Gate<R> + Send + Sync + 'r,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
     {
@@ -160,7 +161,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// declaration order via [`Effect::cleanup`].
     pub fn effect<F>(mut self, effect: F) -> Self
     where
-        F: Effect<E, R> + StateKey + Send + Sync + 'r,
+        F: Effect<R> + StateKey + Send + Sync + 'r,
         F::Error: Into<ReconcilerError>,
         <F as StateKey>::Value: Send + Sync,
     {
@@ -176,7 +177,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// Add a poll. Polls observe state without mutating it.
     pub fn poll<P>(mut self, poll: P) -> Self
     where
-        P: Poll<E, R> + Send + Sync + 'r,
+        P: Poll<R> + Send + Sync + 'r,
         P::Error: Into<ReconcilerError>,
     {
         self.apply_steps.push(Box::new(PollStep::new(poll)));
@@ -192,10 +193,9 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     ///
     /// Cleanup runs in reverse declaration order within the group, at the
     /// position of the group in the outer pipeline's cleanup sequence.
-    pub fn group<V>(mut self, group: Group<V, E, R>) -> Self
+    pub fn group<V>(mut self, group: Group<V, R>) -> Self
     where
         V: Send + Sync + 'static,
-        E: 'static,
     {
         let step = EffectStep::new(group);
         let shared = Arc::new(step);
@@ -317,7 +317,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
                 .into_iter()
                 .filter(|f| f.as_str() != finalizer_name)
                 .collect();
-            self.env.patch_finalizers::<R>(&obj_ref, finalizers).await?;
+            self.ops.patch_finalizers::<R>(&obj_ref, finalizers).await?;
             Ok(action)
         } else {
             if !existing_finalizers.iter().any(|f| f == finalizer_name) {
@@ -326,7 +326,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
                 let obj_ref = ObjectRef::new(&namespace, &name);
                 let mut new_finalizers = existing_finalizers;
                 new_finalizers.push(finalizer_name.to_string());
-                self.env
+                self.ops
                     .patch_finalizers::<R>(&obj_ref, new_finalizers)
                     .await?;
             }
@@ -336,7 +336,8 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     }
 
     /// Backward-compatible alias for [`execute`](Self::execute).
-    #[deprecated = "prefer `execute` in new code."]
+    ///
+    /// Prefer `execute` in new code.
     pub async fn run<T, F>(
         self,
         finalizer_name: &str,
@@ -356,7 +357,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     /// effects, and polls are registered:
     ///
     /// ```ignore
-    /// Reconcile::new(env, obj)
+    /// Reconcile::new(ops, obj)
     ///     .effect(CreateDatabase { .. })
     ///     .poll(WaitForReady { .. })
     ///     .status(|state, prev| MyStatus {
@@ -365,7 +366,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     ///     .execute(FINALIZER)
     ///     .await
     /// ```
-    pub fn status<T, F>(self, build_status: F) -> ReadyReconcile<'r, E, R, T>
+    pub fn status<T, F>(self, build_status: F) -> ReadyReconcile<'r, R, T>
     where
         T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
         F: Fn(&State, &T) -> T + Send + Sync + 'r,
@@ -380,7 +381,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
     ///
     /// After each step, the status closure is evaluated. If the
     /// resulting status differs from the last-patched value, a status
-    /// patch is issued via the environment. This gives intermediate
+    /// patch is issued via the operations handle. This gives intermediate
     /// observability without redundant API calls on no-op reconciles.
     ///
     /// When `rotation_key` is `Some`, the framework inserts
@@ -398,7 +399,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         T: Serialize + Default + PartialEq + Clone,
         F: Fn(&State, &T) -> T,
     {
-        let env = self.env;
+        let ops = self.ops;
         let generation = self.obj.meta().generation.unwrap_or(0);
         let mut state = State::new();
         let mut last_patched: Option<ResourceStatus<T>> = None;
@@ -415,7 +416,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         };
 
         for step in self.apply_steps.iter() {
-            match step.run_apply(&cx, env, &mut state).await {
+            match step.run_apply(&cx, ops, &mut state).await {
                 StepProgress::Continue => {
                     let resource = build_status(&state, prev_resource);
                     let wrapped = ResourceStatus {
@@ -424,7 +425,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
                         resource,
                     };
                     if last_patched.as_ref() != Some(&wrapped) {
-                        patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await?;
+                        patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await?;
                         last_patched = Some(wrapped);
                     }
                 }
@@ -438,7 +439,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
                         resource,
                     };
                     if last_patched.as_ref() != Some(&wrapped) {
-                        patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await?;
+                        patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await?;
                     }
                     return Ok(Action::requeue(retry_after));
                 }
@@ -454,18 +455,18 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
             resource,
         };
         if last_patched.as_ref() != Some(&wrapped) {
-            patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await?;
+            patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await?;
         }
 
-        if let Some(key) = rotation_key
-            && let Err(e) = env.remove_annotation::<R>(obj_ref, key).await
-        {
-            warn!(
-                error = %e,
-                annotation = %key,
-                obj = %obj_ref,
-                "Failed to remove rotation annotation (non-fatal)"
-            );
+        if let Some(key) = rotation_key {
+            if let Err(e) = ops.remove_annotation::<R>(obj_ref, key).await {
+                warn!(
+                    error = %e,
+                    annotation = %key,
+                    obj = %obj_ref,
+                    "Failed to remove rotation annotation (non-fatal)"
+                );
+            }
         }
 
         Ok(Action::requeue(self.steady_interval))
@@ -485,7 +486,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         T: Serialize + Default + PartialEq + Clone,
         F: Fn(&State, &T) -> T,
     {
-        let env = self.env;
+        let ops = self.ops;
         let generation = self.obj.meta().generation.unwrap_or(0);
         let state = State::new();
 
@@ -496,7 +497,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
         };
 
         for step in self.cleanup_steps.iter().rev() {
-            match step.run_cleanup(&cx, env).await {
+            match step.run_cleanup(&cx, ops).await {
                 CleanupProgress::Continue => continue,
                 CleanupProgress::Retry(backoff) => {
                     let retry_after = backoff.next(BackoffContext {
@@ -517,7 +518,7 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
                         observed_generation: Some(generation),
                         resource,
                     };
-                    let _ = patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await;
+                    let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
                     return Ok(Action::requeue(retry_after));
                 }
                 CleanupProgress::Error(e) => return Err(e.into()),
@@ -530,26 +531,20 @@ impl<'r, E: Environment + Sync, R: EnvResource + HasConditions> Reconcile<'r, E,
             observed_generation: Some(generation),
             resource,
         };
-        let _ = patch_status_via_env::<R, _>(env, obj_ref, &wrapped).await;
+        let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
         Ok(Action::await_change())
     }
 }
 
-type StatusBuilder<'r, T> = Box<dyn Fn(&State, &T) -> T + Send + Sync + 'r>;
-
-/// A `Reconcile` pipeline with its status builder already attached.
-///
-/// Produced by [`Reconcile::status()`]. Call `.execute(finalizer)` or
-/// `.converge()` to run the pipeline — no closure needed at that point.
-pub struct ReadyReconcile<'r, E: Environment + Sync, R: EnvResource + HasConditions, T>
+pub struct ReadyReconcile<'r, R: EnvResource + HasConditions, T>
 where
     T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
 {
-    inner: Reconcile<'r, E, R>,
-    build_status: StatusBuilder<'r, T>,
+    inner: Reconcile<'r, R>,
+    build_status: Box<dyn Fn(&State, &T) -> T + Send + Sync + 'r>,
 }
 
-impl<'r, E: Environment + Sync, R: EnvResource + HasConditions, T> ReadyReconcile<'r, E, R, T>
+impl<'r, R: EnvResource + HasConditions, T> ReadyReconcile<'r, R, T>
 where
     T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
 {
@@ -569,41 +564,43 @@ where
 struct SharedApplyStep<T>(Arc<T>);
 
 #[async_trait::async_trait]
-impl<T, E, K> ApplyStep<E, K> for SharedApplyStep<T>
+impl<T, K> ApplyStep<K> for SharedApplyStep<T>
 where
-    T: ApplyStep<E, K> + Send + Sync,
-    E: Environment + Sync,
+    T: ApplyStep<K> + Send + Sync,
     K: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        self.0.run_apply(cx, env, state).await
+        self.0.run_apply(cx, ops, state).await
     }
 }
 
 struct SharedCleanableStep<T>(Arc<T>);
 
 #[async_trait::async_trait]
-impl<T, E, K> CleanableStep<E, K> for SharedCleanableStep<T>
+impl<T, K> CleanableStep<K> for SharedCleanableStep<T>
 where
-    T: CleanableStep<E, K> + Send + Sync,
-    E: Environment + Sync,
+    T: CleanableStep<K> + Send + Sync,
     K: Send + Sync,
 {
-    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext<K>, env: &'a E) -> CleanupProgress {
-        self.0.run_cleanup(cx, env).await
+    async fn run_cleanup<'a>(
+        &'a self,
+        cx: &'a ReconcileContext<K>,
+        ops: &'a KubeHandle,
+    ) -> CleanupProgress {
+        self.0.run_cleanup(cx, ops).await
     }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-/// Serialize the status value and patch it via Environment.
-async fn patch_status_via_env<R, S>(
-    env: &impl Environment,
+/// Serialize the status value and patch it via KubeHandle.
+async fn patch_status_via_ops<R, S>(
+    ops: &KubeHandle,
     obj_ref: &ObjectRef,
     status: &S,
 ) -> Result<(), ReconcileError>
@@ -613,7 +610,7 @@ where
 {
     let value = serde_json::to_value(status)
         .map_err(|e| ReconcilerError::Env(EnvironmentError::Serde(e)))?;
-    env.patch_status::<R>(obj_ref, value)
+    ops.patch_status::<R>(obj_ref, value)
         .await
         .map_err(ReconcilerError::Env)?;
     Ok(())

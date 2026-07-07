@@ -14,7 +14,7 @@
 //! Effects must be **self-contained for cleanup**. During the cleanup phase, the
 //! state bag from the original apply pass is not available. The cleanup method must
 //! re-derive any context it needs (object references, credentials, API clients)
-//! from the `env` directly or from fields on the effect struct.
+//! from `ops` directly or from fields on the effect struct.
 //!
 //! # Implementing an Effect
 //!
@@ -29,25 +29,16 @@
 //! }
 //!
 //! #[async_trait]
-//! impl<E: Environment + Sync> Effect<E, MyResource> for CreateVaultMount {
+//! impl Effect<VaultKvMount> for CreateVaultMount {
 //!     type Error = MyError;
 //!
-//!     async fn apply(
-//!         &self,
-//!         cx: &ReconcileContext<MyResource>,
-//!         env: &E,
-//!         state: &State,
-//!     ) -> Result<EffectOutcome<String>, Self::Error> {
+//!     async fn apply(&self, cx: &ReconcileContext<VaultKvMount>, ops: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
 //!         let vault_addr = state.require::<ResolveVaultInstance>()?;
 //!         // ... create the mount via Vault API ...
 //!         Ok(EffectOutcome::Done(format!("{}/{}/kv", self.namespace, self.name)))
 //!     }
 //!
-//!     async fn cleanup(
-//!         &self,
-//!         cx: &ReconcileContext<MyResource>,
-//!         env: &E,
-//!     ) -> Result<CleanupAction, Self::Error> {
+//!     async fn cleanup(&self, cx: &ReconcileContext<VaultKvMount>, ops: &KubeHandle) -> Result<CleanupAction, Self::Error> {
 //!         // ... delete the mount via Vault API ...
 //!         Ok(CleanupAction::Done)
 //!     }
@@ -61,7 +52,7 @@ use crate::{
     ReconcileContext,
     backoff::Backoff,
     cleanup::CleanupAction,
-    environment::Environment,
+    environment::KubeHandle,
     state::{State, StateKey},
 };
 
@@ -116,7 +107,7 @@ pub enum EffectOutcome<T> {
 /// the parent resource is being deleted (i.e. during the finalizer's
 /// `Cleanup` event).
 #[async_trait]
-pub trait Effect<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
+pub trait Effect<K: Send + Sync = ()>: StateKey {
     type Error;
 
     /// Apply this effect — create or update external state.
@@ -132,7 +123,7 @@ pub trait Effect<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
     async fn apply(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
         state: &State,
     ) -> Result<EffectOutcome<<Self as StateKey>::Value>, Self::Error>;
 
@@ -141,7 +132,7 @@ pub trait Effect<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
     /// Called during the `Cleanup` phase (finalizer deletion) in reverse
     /// declaration order. The implementation should be self-contained:
     /// it must re-derive any context it needs (secrets, tokens, client
-    /// connections) from `env` directly, since the state bag from the
+    /// connections) from `ops` directly, since the state bag from the
     /// original apply pass is not available.
     ///
     /// The default returns [`CleanupAction::Skip`], indicating that no
@@ -149,10 +140,10 @@ pub trait Effect<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         let _ = cx;
-        let _ = env;
+        let _ = ops;
         Ok(CleanupAction::Skip)
     }
 }

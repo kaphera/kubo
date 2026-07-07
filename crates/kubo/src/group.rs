@@ -29,10 +29,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use kubo::group::Group;
-//! use kubo::reconcile::Reconcile;
+//! use k8s_operator_reconciler::group::Group;
 //!
-//! Reconcile::new(&env, obj)
+//! Reconcile::new(&ops, obj)
 //!     .gate(ResolvePostgresDatabase::new(...))
 //!     .group(
 //!         Group::new()
@@ -62,7 +61,7 @@ use crate::{
     backoff::Backoff,
     cleanup::CleanupAction,
     effect::{Effect, EffectOutcome},
-    environment::Environment,
+    environment::KubeHandle,
     gate::{Gate, Outcome},
     poll::{Poll, PollState},
     state::{State, StateError, StateKey},
@@ -77,17 +76,17 @@ enum SubStepResult {
 }
 
 #[async_trait]
-trait SubStep<E: Environment + Sync, K: Send + Sync>: Send + Sync {
+trait SubStep<K: Send + Sync>: Send + Sync {
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError>;
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError>;
 }
 
@@ -96,21 +95,20 @@ struct SubGateStep<G> {
 }
 
 #[async_trait]
-impl<G, E, K> SubStep<E, K> for SubGateStep<G>
+impl<G, K> SubStep<K> for SubGateStep<G>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    G: Gate<E, K> + StateKey + Send + Sync,
+    G: Gate<K> + StateKey + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
-        match self.gate.evaluate(cx, env).await {
+        match self.gate.evaluate(cx, ops).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<G>(v);
                 Ok(SubStepResult::Continue)
@@ -125,7 +123,7 @@ where
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<K>,
-        _env: &E,
+        _ops: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
     }
@@ -136,21 +134,20 @@ struct SubEffectStep<F> {
 }
 
 #[async_trait]
-impl<F, E, K> SubStep<E, K> for SubEffectStep<F>
+impl<F, K> SubStep<K> for SubEffectStep<F>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    F: Effect<E, K> + StateKey + Send + Sync,
+    F: Effect<K> + StateKey + Send + Sync,
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
-        match self.effect.apply(cx, env, state).await {
+        match self.effect.apply(cx, ops, state).await {
             Ok(EffectOutcome::Done(v)) => {
                 state.insert::<F>(v);
                 Ok(SubStepResult::Continue)
@@ -165,9 +162,9 @@ where
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
-        self.effect.cleanup(cx, env).await.map_err(Into::into)
+        self.effect.cleanup(cx, ops).await.map_err(Into::into)
     }
 }
 
@@ -176,20 +173,19 @@ struct SubPollStep<P> {
 }
 
 #[async_trait]
-impl<P, E, K> SubStep<E, K> for SubPollStep<P>
+impl<P, K> SubStep<K> for SubPollStep<P>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    P: Poll<E, K> + Send + Sync,
+    P: Poll<K> + Send + Sync,
     P::Error: Into<ReconcilerError>,
 {
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
         _state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
-        match self.poll.check(cx, env).await {
+        match self.poll.check(cx, ops).await {
             Ok(PollState::Done) => Ok(SubStepResult::Continue),
             Ok(
                 PollState::Pending { condition, backoff }
@@ -202,7 +198,7 @@ where
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<K>,
-        _env: &E,
+        _ops: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
     }
@@ -235,23 +231,13 @@ where
 ///
 /// Cleanup walks effects in reverse declaration order (gates and polls are
 /// skipped — they have no cleanup obligations).
-pub struct Group<V, E: Environment + Sync, K: Send + Sync = ()> {
-    steps: Vec<Box<dyn SubStep<E, K>>>,
+pub struct Group<V, K: Send + Sync = ()> {
+    steps: Vec<Box<dyn SubStep<K>>>,
     reducer: Option<Box<dyn Reducer<V>>>,
     _phantom: PhantomData<K>,
 }
 
-impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static> Default
-    for Group<V, E, K>
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static>
-    Group<V, E, K>
-{
+impl<V: Send + Sync + 'static, K: Send + Sync + 'static> Group<V, K> {
     /// Create an empty group.
     pub fn new() -> Self {
         Self {
@@ -268,7 +254,7 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync +
     /// group propagates it as a Retry to the outer pipeline.
     pub fn gate<G>(mut self, gate: G) -> Self
     where
-        G: Gate<E, K> + StateKey + Send + Sync + 'static,
+        G: Gate<K> + StateKey + Send + Sync + 'static,
         G::Error: Into<ReconcilerError>,
         <G as StateKey>::Value: Send + Sync,
     {
@@ -283,7 +269,7 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync +
     /// pipeline runs cleanup.
     pub fn effect<F>(mut self, effect: F) -> Self
     where
-        F: Effect<E, K> + StateKey + Send + Sync + 'static,
+        F: Effect<K> + StateKey + Send + Sync + 'static,
         F::Error: Into<ReconcilerError>,
         <F as StateKey>::Value: Send + Sync,
     {
@@ -297,7 +283,7 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync +
     /// as a Retry to the outer pipeline.
     pub fn poll<P>(mut self, poll: P) -> Self
     where
-        P: Poll<E, K> + Send + Sync + 'static,
+        P: Poll<K> + Send + Sync + 'static,
         P::Error: Into<ReconcilerError>,
     {
         self.steps.push(Box::new(SubPollStep { poll }));
@@ -320,10 +306,9 @@ impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync +
 }
 
 #[async_trait]
-impl<V, E, K> Effect<E, K> for Group<V, E, K>
+impl<V, K> Effect<K> for Group<V, K>
 where
     V: Send + Sync + 'static,
-    E: Environment + Sync + 'static,
     K: Send + Sync + 'static,
 {
     type Error = ReconcilerError;
@@ -331,13 +316,13 @@ where
     async fn apply(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
         _outer_state: &State,
     ) -> Result<EffectOutcome<V>, ReconcilerError> {
         let mut scoped_state = State::new();
 
         for step in &self.steps {
-            match step.run(cx, env, &mut scoped_state).await? {
+            match step.run(cx, ops, &mut scoped_state).await? {
                 SubStepResult::Continue => continue,
                 SubStepResult::Wait { condition, backoff } => {
                     return Ok(EffectOutcome::Retry { condition, backoff });
@@ -361,10 +346,10 @@ where
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         for step in self.steps.iter().rev() {
-            match step.cleanup(cx, env).await? {
+            match step.cleanup(cx, ops).await? {
                 CleanupAction::Skip | CleanupAction::Done => continue,
                 CleanupAction::Retry(backoff) => return Ok(CleanupAction::Retry(backoff)),
             }
@@ -373,8 +358,6 @@ where
     }
 }
 
-impl<V: Send + Sync + 'static, E: Environment + Sync + 'static, K: Send + Sync + 'static> StateKey
-    for Group<V, E, K>
-{
+impl<V: Send + Sync + 'static, K: Send + Sync + 'static> StateKey for Group<V, K> {
     type Value = V;
 }

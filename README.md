@@ -14,7 +14,7 @@
 
 Declare your reconcile logic as a typed, sequential pipeline of gates, effects, and polls. The framework handles finalizer lifecycle, status patching, backoff, and reverse-order cleanup — you focus on what your controller does, not the ceremony around it.
 
-Every Kubernetes interaction goes through an `Environment` trait, so the entire reconcile pass is unit-testable in-memory without a cluster. A top-level `Runtime` wires together leader election, signal handling, and graceful drain so your `main.rs` stays thin.
+Every Kubernetes interaction goes through a `KubeHandle` — a concrete handle wrapping a `kube::Client` and a field-manager identity — so the entire reconcile pass runs identically against a real cluster or an in-process fake. A top-level `Runtime` wires together leader election, signal handling, and graceful drain so your `main.rs` stays thin.
 
 ## Usage
 
@@ -22,9 +22,8 @@ The runtime is your entry point. Register one listener per CRD kind:
 
 ```rust
 use kubo::runtime::Runtime;
-use kubo::environment::RealEnvironment;
 
-Runtime::new("my-operator", client, env)
+Runtime::new("my-operator", client)
     .with(reqwest::Client::new())
     .listener(WebServiceListener)
     .listener(DatabaseListener)
@@ -39,7 +38,7 @@ use std::{sync::Arc, time::Duration};
 use k8s_openapi::api::{apps::v1::Deployment, core::v1::{ConfigMap, Service}};
 use kubo::{
     ReconcileContext, async_trait,
-    environment::{Environment, EnvironmentError, ObjectRef},
+    environment::{EnvironmentError, KubeHandle, ObjectRef},
     gate::{Gate, Outcome},
     effect::{Effect, EffectOutcome},
     backoff::fixed::Fixed,
@@ -55,7 +54,7 @@ use kube::{
 
 pub struct WebServiceListener;
 
-impl Listener<RealEnvironment, WebService> for WebServiceListener {
+impl Listener<WebService> for WebServiceListener {
     type Status = WebServiceStatus;
 
     const NAME: &'static str = "web-service";
@@ -63,7 +62,7 @@ impl Listener<RealEnvironment, WebService> for WebServiceListener {
 
     fn controller(
         &self,
-        ctx: &ControllerContext<RealEnvironment>,
+        ctx: &ControllerContext,
         ctrl: Controller<WebService>,
     ) -> Controller<WebService> {
         let client = ctx.require::<kube::Client>();
@@ -99,10 +98,10 @@ impl Listener<RealEnvironment, WebService> for WebServiceListener {
 
     fn reconcile<'a>(
         &'a self,
-        _ctx: &'a ControllerContext<RealEnvironment>,
+        _ctx: &'a ControllerContext,
         obj: Arc<WebService>,
-        rec: Reconcile<'a, RealEnvironment, WebService>,
-    ) -> ReadyReconcile<'a, RealEnvironment, WebService, WebServiceStatus> {
+        rec: Reconcile<'a, WebService>,
+    ) -> ReadyReconcile<'a, WebService, WebServiceStatus> {
         rec.ready_reason("DeploymentReady", "WebService is serving traffic")
             .gate(ResolveDatabase::new())
             .gate(ResolveTlsSecret::new())
@@ -146,17 +145,17 @@ impl StateKey for ResolveDatabase {
 }
 
 #[async_trait]
-impl<E: Environment + Sync> Gate<E, WebService> for ResolveDatabase {
+impl Gate<WebService> for ResolveDatabase {
     type Error = EnvironmentError;
 
     async fn evaluate(
         &self,
         cx: &ReconcileContext<WebService>,
-        env: &E,
+        ops: &KubeHandle,
     ) -> Result<Outcome<DatabaseEndpoint>, Self::Error> {
         let ns = cx.cr.metadata.namespace.as_deref().unwrap_or_default();
         let db_ref = ObjectRef::new(ns, &cx.cr.spec.database_ref.name);
-        let db: Option<Database> = env.get::<Database>(&db_ref).await?;
+        let db: Option<Database> = ops.get::<Database>(&db_ref).await?;
 
         match db {
             None => Ok(Outcome::Wait {
@@ -189,13 +188,13 @@ impl StateKey for ApplyDeployment {
 }
 
 #[async_trait]
-impl<E: Environment + Sync> Effect<E, WebService> for ApplyDeployment {
+impl Effect<WebService> for ApplyDeployment {
     type Error = EnvironmentError;
 
     async fn apply(
         &self,
         cx: &ReconcileContext<WebService>,
-        env: &E,
+        ops: &KubeHandle,
         state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         // Compile-time guarantee: this value exists in state because
@@ -205,7 +204,7 @@ impl<E: Environment + Sync> Effect<E, WebService> for ApplyDeployment {
             .map_err(|e| EnvironmentError::Other(e.to_string()))?;
 
         let deployment = Self::desired_deployment(&cx.cr, &config_hash);
-        env.apply::<Deployment>(&cx.object.namespace, deployment).await?;
+        ops.apply::<Deployment>(&cx.object.namespace, deployment).await?;
         Ok(EffectOutcome::Done(()))
     }
 }
@@ -243,7 +242,7 @@ Downstream effects retrieve the hash with `state.require::<ApplyConfigMap<WebSer
 
 **Group** — A composable sub-pipeline that collapses into a single effect position. Sub-steps (gates, effects, polls) share a scoped state bag that never leaks into the outer pipeline; a reducer closure produces the single value published under the group's `StateKey`. Cleanup walks the group's effects in reverse declaration order, at the group's position in the outer cleanup sequence. Use it for tightly-coupled sub-steps whose intermediates are implementation details.
 
-**Listener** — Implements the `Listener<E, R>` trait, which declares an associated `Status` type, a `NAME` constant, a `FINALIZER` constant, a `controller()` method that decorates the framework-provided `kube::runtime::Controller<R>` with `.owns()` (for resources this controller creates) and `.watches()` (for upstream resources whose changes should trigger reconciliation), and a `reconcile()` method returning a `ReadyReconcile`. One listener per CRD kind.
+**Listener** — Implements the `Listener<R>` trait, which declares an associated `Status` type, a `NAME` constant, a `FINALIZER` constant, a `controller()` method that decorates the framework-provided `kube::runtime::Controller<R>` with `.owns()` (for resources this controller creates) and `.watches()` (for upstream resources whose changes should trigger reconciliation), and a `reconcile()` method returning a `ReadyReconcile`. One listener per CRD kind.
 
 **Runtime** — Top-level entry point. Holds operator-wide `Extensions` (a type-keyed map of shared clients and config), registers listeners, manages leader election via a Coordination v1 `Lease`, handles OS signals, and drains in-flight reconciliations on shutdown.
 
@@ -261,20 +260,21 @@ On **cleanup** (deletion timestamp present), effect `cleanup` methods run in rev
 
 ## Testing
 
-`TestEnvironment` is an in-memory implementation of the `Environment` trait. Seed upstream resources, run your pipeline, and assert on resulting cluster state — no k3d, no kind, no waiting.
+Tests construct a `KubeHandle` from the `kube::Client` provided by `World`, which points at an in-process `FakeApiServer`. Seed upstream resources, run your pipeline, and assert on resulting cluster state — no k3d, no kind, no waiting.
 
 ```rust
 use std::sync::Arc;
-use kubo::testing::TestEnvironment;
+use kubo::testing::World;
+use kubo::environment::{KubeHandle, ObjectRef};
 use kubo::reconcile::Reconcile;
-use kubo::environment::ObjectRef;
 
-let env = TestEnvironment::new();
-env.seed(make_vault_instance("my-vault", true));
+let world = World::builder().build().await;
+world.prefill(make_vault_instance("my-vault", true));
 
+let ops = KubeHandle::new(world.client().clone(), "my-operator");
 let obj = Arc::new(make_vault_kv_mount("my-mount", "ns", "my-vault"));
 
-Reconcile::new(&env, obj)
+Reconcile::new(&ops, obj)
     .gate(ResolveVaultInstance { .. })
     .effect(CreateMount { .. })
     .status(|state, _prev: &MyStatus| MyStatus {
@@ -283,7 +283,7 @@ Reconcile::new(&env, obj)
     .execute(FINALIZER)
     .await?;
 
-assert!(env.has::<Secret>(&ObjectRef::new("ns", "my-secret")));
+assert!(world.has::<Secret>("ns", "my-secret"));
 ```
 
 ### Property-based testing with `kubo::testing`
@@ -379,7 +379,7 @@ A single `SEED=N` environment variable seeds both proptest's case-generation RNG
 
 ## Conformance
 
-The `kubo-conformance` crate verifies that the in-process `FakeApiServer` (used by `TestEnvironment` and `World`) behaves identically to a real kube-apiserver for the SSA semantics the framework relies on. A `Scenario` is a sequence of apply operations with field managers; `run_against_fake` executes it against the fake and records the HTTP status per step. With the `k3d` feature enabled, `run_against_kube_apiserver` runs the same scenario against a real cluster and `assert_equivalent` compares the two traces entry-by-entry.
+The `kubo-conformance` crate verifies that the in-process `FakeApiServer` (used by `World`) behaves identically to a real kube-apiserver for the SSA semantics the framework relies on. A `Scenario` is a sequence of apply operations with field managers; `run_against_fake` executes it against the fake and records the HTTP status per step. With the `k3d` feature enabled, `run_against_kube_apiserver` runs the same scenario against a real cluster and `assert_equivalent` compares the two traces entry-by-entry.
 
 ```rust
 use kubo_conformance::Scenario;

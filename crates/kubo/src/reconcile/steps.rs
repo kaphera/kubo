@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     cleanup::CleanupAction,
     effect::{Effect, EffectOutcome},
-    environment::Environment,
+    environment::KubeHandle,
     gate::{Gate, Outcome},
     poll::{Poll, PollState},
     reconcile::ReconcilerError,
@@ -18,18 +18,22 @@ use super::StepProgress;
 // ─── Apply-phase steps ───────────────────────────────────────────────
 
 #[async_trait]
-pub(super) trait ApplyStep<E: Environment, K: Send + Sync>: Send + Sync {
+pub(super) trait ApplyStep<K: Send + Sync>: Send + Sync {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress;
 }
 
 #[async_trait]
-pub(super) trait CleanableStep<E: Environment, K: Send + Sync>: Send + Sync {
-    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext<K>, env: &'a E) -> CleanupProgress;
+pub(super) trait CleanableStep<K: Send + Sync>: Send + Sync {
+    async fn run_cleanup<'a>(
+        &'a self,
+        cx: &'a ReconcileContext<K>,
+        ops: &'a KubeHandle,
+    ) -> CleanupProgress;
 }
 
 pub(super) enum CleanupProgress {
@@ -52,21 +56,20 @@ impl<G> GateStep<G> {
 }
 
 #[async_trait]
-impl<G, E, K> ApplyStep<E, K> for GateStep<G>
+impl<G, K> ApplyStep<K> for GateStep<G>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    G: Gate<E, K> + StateKey + Send + Sync,
+    G: Gate<K> + StateKey + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        match self.gate.evaluate(cx, env).await {
+        match self.gate.evaluate(cx, ops).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<G>(v);
                 StepProgress::Continue
@@ -95,11 +98,10 @@ impl<G, J> GateAsStep<G, J> {
 }
 
 #[async_trait]
-impl<G, J, E, K> ApplyStep<E, K> for GateAsStep<G, J>
+impl<G, J, K> ApplyStep<K> for GateAsStep<G, J>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    G: Gate<E, K> + Send + Sync,
+    G: Gate<K> + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
     J: StateKey<Value = <G as StateKey>::Value> + Send + Sync,
@@ -107,10 +109,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        match self.gate.evaluate(cx, env).await {
+        match self.gate.evaluate(cx, ops).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<J>(v);
                 StepProgress::Continue
@@ -135,21 +137,20 @@ impl<G> GuardStep<G> {
 }
 
 #[async_trait]
-impl<G, E, K> ApplyStep<E, K> for GuardStep<G>
+impl<G, K> ApplyStep<K> for GuardStep<G>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    G: Gate<E, K> + Send + Sync,
+    G: Gate<K> + Send + Sync,
     G::Error: Into<ReconcilerError>,
     <G as StateKey>::Value: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         _state: &mut State,
     ) -> StepProgress {
-        match self.gate.evaluate(cx, env).await {
+        match self.gate.evaluate(cx, ops).await {
             Ok(Outcome::Pass(_)) => StepProgress::Continue,
             Ok(Outcome::Wait { condition, backoff }) => StepProgress::Wait { condition, backoff },
             Err(e) => StepProgress::Error(e.into()),
@@ -170,21 +171,20 @@ impl<F> EffectStep<F> {
 }
 
 #[async_trait]
-impl<F, E, K> ApplyStep<E, K> for EffectStep<F>
+impl<F, K> ApplyStep<K> for EffectStep<F>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    F: Effect<E, K> + StateKey + Send + Sync,
+    F: Effect<K> + StateKey + Send + Sync,
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        match self.effect.apply(cx, env, state).await {
+        match self.effect.apply(cx, ops, state).await {
             Ok(EffectOutcome::Done(v)) => {
                 state.insert::<F>(v);
                 StepProgress::Continue
@@ -198,16 +198,19 @@ where
 }
 
 #[async_trait]
-impl<F, E, K> CleanableStep<E, K> for EffectStep<F>
+impl<F, K> CleanableStep<K> for EffectStep<F>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    F: Effect<E, K> + StateKey + Send + Sync,
+    F: Effect<K> + StateKey + Send + Sync,
     F::Error: Into<ReconcilerError>,
     <F as StateKey>::Value: Send + Sync,
 {
-    async fn run_cleanup<'a>(&'a self, cx: &'a ReconcileContext<K>, env: &'a E) -> CleanupProgress {
-        match self.effect.cleanup(cx, env).await {
+    async fn run_cleanup<'a>(
+        &'a self,
+        cx: &'a ReconcileContext<K>,
+        ops: &'a KubeHandle,
+    ) -> CleanupProgress {
+        match self.effect.cleanup(cx, ops).await {
             Ok(CleanupAction::Skip) | Ok(CleanupAction::Done) => CleanupProgress::Continue,
             Ok(CleanupAction::Retry(backoff)) => CleanupProgress::Retry(backoff),
             Err(e) => CleanupProgress::Error(e.into()),
@@ -228,20 +231,19 @@ impl<P> PollStep<P> {
 }
 
 #[async_trait]
-impl<P, E, K> ApplyStep<E, K> for PollStep<P>
+impl<P, K> ApplyStep<K> for PollStep<P>
 where
-    E: Environment + Sync,
     K: Send + Sync,
-    P: Poll<E, K> + Send + Sync,
+    P: Poll<K> + Send + Sync,
     P::Error: Into<ReconcilerError>,
 {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        env: &'a E,
+        ops: &'a KubeHandle,
         _state: &mut State,
     ) -> StepProgress {
-        match self.poll.check(cx, env).await {
+        match self.poll.check(cx, ops).await {
             Ok(PollState::Done) => StepProgress::Continue,
             Ok(PollState::Pending { condition, backoff }) => {
                 StepProgress::Wait { condition, backoff }

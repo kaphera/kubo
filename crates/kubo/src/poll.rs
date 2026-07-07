@@ -20,15 +20,11 @@
 //! }
 //!
 //! #[async_trait]
-//! impl<E: Environment + Sync> Poll<E, MyResource> for WaitForDatabaseReady {
+//! impl Poll<Database> for WaitForDatabaseReady {
 //!     type Error = MyError;
 //!
-//!     async fn check(
-//!         &self,
-//!         cx: &ReconcileContext<MyResource>,
-//!         env: &E,
-//!     ) -> Result<PollState, Self::Error> {
-//!         let db = env.get::<Database>(&ObjectRef::new(&cx.object.namespace, &self.name)).await?;
+//!     async fn check(&self, cx: &ReconcileContext<Database>, ops: &KubeHandle) -> Result<PollState, Self::Error> {
+//!         let db = ops.get::<Database>(&ObjectRef::new(&cx.object.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if has_ready_condition(&db) => Ok(PollState::Done),
 //!             Some(_) => Ok(PollState::Pending {
@@ -47,7 +43,7 @@
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
-use crate::{ReconcileContext, backoff::Backoff, environment::Environment};
+use crate::{ReconcileContext, backoff::Backoff, environment::KubeHandle};
 
 /// The result of a poll check.
 pub enum PollState {
@@ -78,10 +74,14 @@ pub enum PollState {
 /// block the pipeline until a condition is met and to surface progress
 /// information via status conditions.
 #[async_trait]
-pub trait Poll<E: Environment + Sync, K: Send + Sync = ()> {
+pub trait Poll<K: Send + Sync = ()> {
     /// The error type for unrecoverable failures during the check.
     type Error;
 
     /// Observe the current state and return whether convergence has been reached.
-    async fn check(&self, cx: &ReconcileContext<K>, env: &E) -> Result<PollState, Self::Error>;
+    async fn check(
+        &self,
+        cx: &ReconcileContext<K>,
+        ops: &KubeHandle,
+    ) -> Result<PollState, Self::Error>;
 }

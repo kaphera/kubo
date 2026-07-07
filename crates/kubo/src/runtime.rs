@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     HasConditions,
-    environment::{EnvResource, Environment},
+    environment::{EnvResource, KubeHandle},
     extensions::Extensions,
     listener::{ControllerContext, Listener},
     reconcile::{Reconcile, ReconcileError},
@@ -23,11 +23,8 @@ mod lease;
 
 /// Type-erased controller factory. Produces a future that runs one controller
 /// for the duration of a leadership term.
-type ControllerFn<E> = Box<
-    dyn Fn(
-            &RuntimeContext<E>,
-            CancellationToken,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+type ControllerFn = Box<
+    dyn Fn(&RuntimeContext, CancellationToken) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
         + Send
         + Sync,
 >;
@@ -106,35 +103,40 @@ impl RuntimeConfig {
 /// ```ignore
 /// use kubo::runtime::Runtime;
 ///
-/// Runtime::new("my-operator", client, env)
+/// Runtime::new("my-operator", client)
 ///     .with(reqwest::Client::new())
 ///     .listener(VaultInstanceListener)
 ///     .listener(PostgresDatabaseListener)
 ///     .run()
 ///     .await
 /// ```
-pub struct Runtime<E: Environment + Sync + 'static> {
+pub struct Runtime {
     name: &'static str,
     client: kube::Client,
-    env: E,
+    ops: KubeHandle,
     extensions: Extensions,
-    controllers: Vec<(&'static str, ControllerFn<E>)>,
+    controllers: Vec<(&'static str, ControllerFn)>,
 }
 
-impl<E: Environment + Sync + 'static> Runtime<E> {
+impl Runtime {
     /// Create a new runtime.
     ///
     /// The `client` is used for leader election (Lease API) and is
     /// automatically inserted into the extensions map so listeners
     /// can access it via `ctx.require::<kube::Client>()`.
-    pub fn new(name: &'static str, client: kube::Client, env: E) -> Self {
+    ///
+    /// A [`KubeHandle`] handle is constructed internally using `name` as the
+    /// SSA field manager, so all controllers in this runtime share one
+    /// field-manager identity.
+    pub fn new(name: &'static str, client: kube::Client) -> Self {
+        let ops = KubeHandle::new(client.clone(), name);
         let mut extensions = Extensions::new();
         extensions.insert(client.clone());
 
         Self {
             name,
             client,
-            env,
+            ops,
             extensions,
             controllers: Vec::new(),
         }
@@ -155,19 +157,19 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
     pub fn listener<R, L>(mut self, listener: L) -> Self
     where
         R: EnvResource + HasConditions + Debug + 'static,
-        L: Listener<E, R> + 'static,
+        L: Listener<R> + 'static,
     {
         let listener = Arc::new(listener);
         let client = self.client.clone();
 
-        let factory: ControllerFn<E> = Box::new(move |rt_ctx, cancel| {
+        let factory: ControllerFn = Box::new(move |rt_ctx, cancel| {
             let listener = Arc::clone(&listener);
-            let env = rt_ctx.env_arc();
+            let ops = rt_ctx.ops_arc();
             let extensions = rt_ctx.extensions_arc();
             let client = client.clone();
 
             Box::pin(async move {
-                let ctrl_ctx = Arc::new(ControllerContext::new(env, extensions));
+                let ctrl_ctx = Arc::new(ControllerContext::new(ops, extensions));
                 let controller = {
                     use kube::runtime::watcher::Config as WatcherConfig;
 
@@ -184,10 +186,10 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
                     .run(
                         {
                             let listener = Arc::clone(&listener);
-                            move |obj: Arc<R>, ctx: Arc<ControllerContext<E>>| {
+                            move |obj: Arc<R>, ctx: Arc<ControllerContext>| {
                                 let listener = Arc::clone(&listener);
                                 async move {
-                                    let reconciler = Reconcile::new(ctx.env(), obj.clone());
+                                    let reconciler = Reconcile::new(ctx.ops(), obj.clone());
                                     listener
                                         .reconcile(&ctx, obj, reconciler)
                                         .execute(L::FINALIZER)
@@ -195,7 +197,7 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
                                 }
                             }
                         },
-                        |_obj: Arc<R>, _err: &ReconcileError, _ctx: Arc<ControllerContext<E>>| {
+                        |_obj: Arc<R>, _err: &ReconcileError, _ctx: Arc<ControllerContext>| {
                             Action::requeue(std::time::Duration::from_secs(5))
                         },
                         ctrl_ctx,
@@ -247,11 +249,11 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
 
         let rt_ctx = Arc::new(RuntimeContext {
             name: self.name,
-            env: Arc::new(self.env),
+            ops: Arc::new(self.ops),
             extensions: Arc::new(self.extensions),
         });
 
-        let controllers: Arc<Vec<ControllerFn<E>>> =
+        let controllers: Arc<Vec<ControllerFn>> =
             Arc::new(self.controllers.into_iter().map(|(_, f)| f).collect());
 
         leader::run(
@@ -277,26 +279,25 @@ impl<E: Environment + Sync + 'static> Runtime<E> {
 
 /// Process-scoped context that the Runtime owns and shares with all controllers.
 ///
-/// Holds the operator name (used for leader election and SSA field manager)
-/// and an extensions map for operator-specific state. No hardcoded fields
-/// beyond the name — everything else goes through `.get::<T>()`.
-pub struct RuntimeContext<E: Environment + Sync> {
+/// Holds the operator name (used for leader election) and the shared
+/// [`KubeHandle`] handle plus an extensions map for operator-specific state.
+pub struct RuntimeContext {
     name: &'static str,
-    env: Arc<E>,
+    ops: Arc<KubeHandle>,
     extensions: Arc<Extensions>,
 }
 
-impl<E: Environment + Sync> RuntimeContext<E> {
+impl RuntimeContext {
     pub fn name(&self) -> &'static str {
         self.name
     }
 
-    pub fn env(&self) -> &E {
-        &self.env
+    pub fn ops(&self) -> &KubeHandle {
+        &self.ops
     }
 
-    pub fn env_arc(&self) -> Arc<E> {
-        Arc::clone(&self.env)
+    pub fn ops_arc(&self) -> Arc<KubeHandle> {
+        Arc::clone(&self.ops)
     }
 
     /// Access the extensions type-map.

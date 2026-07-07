@@ -46,7 +46,7 @@ use crate::{
 };
 use kubo_test_fakeapi::{FakeApiServer, Fault, FaultBuilder};
 
-use crate::environment::RealEnvironment;
+use crate::environment::KubeHandle;
 use crate::reconcile::ReconcileError;
 
 // ── ObjRef ────────────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ type ListenerFn = Box<dyn FnOnce(kube::Client) -> tokio::task::AbortHandle + Sen
 /// Implementing this trait lets call sites write `L::Resource` instead of
 /// threading a second type parameter everywhere.  The bound is intentionally
 /// minimal: it captures the association only, leaving the full
-/// `Listener<RealEnvironment, Self::Resource>` constraint to the sites that
+/// `Listener<Self::Resource>` constraint to the sites that
 /// actually need it.
 pub trait ListenerResource {
     type Resource: EnvResource + HasConditions + Debug;
@@ -151,7 +151,7 @@ impl World {
         self.seed
     }
 
-    /// A [`RealEnvironment`] wrapping the fake client.
+    /// A [`KubeHandle`] wrapping the fake client.
     ///
     /// Pass this to `Reconcile::new` to run a pipeline against the fake:
     ///
@@ -162,8 +162,8 @@ impl World {
     ///     .execute(FINALIZER)
     ///     .await?;
     /// ```
-    pub fn env(&self, field_manager: &str) -> RealEnvironment {
-        RealEnvironment::new(self.client.clone(), field_manager)
+    pub fn env(&self, field_manager: &str) -> KubeHandle {
+        KubeHandle::new(self.client.clone(), field_manager)
     }
 
     /// Pre-populate the cluster with a typed object.
@@ -444,7 +444,7 @@ impl World {
     pub fn seed_listener<R, L>(&self, listener: L)
     where
         R: EnvResource + HasConditions + Debug + 'static,
-        L: Listener<RealEnvironment, R> + 'static,
+        L: Listener<R> + 'static,
     {
         self.seed_listener_with_extensions::<R, L>(listener, Extensions::new());
     }
@@ -467,7 +467,7 @@ impl World {
     pub fn seed_listener_with_extensions<R, L>(&self, listener: L, extensions: Extensions)
     where
         R: EnvResource + HasConditions + Debug + 'static,
-        L: Listener<RealEnvironment, R> + 'static,
+        L: Listener<R> + 'static,
     {
         let handle = spawn_listener_task::<R, L>(self.client.clone(), listener, extensions);
         self.listener_abort_handles.lock().unwrap().push(handle);
@@ -583,7 +583,7 @@ impl World {
     /// [`create`](Self::create).
     pub async fn reconcile<L>(&self, obj_ref: &ObjRef) -> Result<Action, ReconcileError>
     where
-        L: Listener<RealEnvironment, <L as ListenerResource>::Resource> + Default + 'static,
+        L: Listener<<L as ListenerResource>::Resource> + Default + 'static,
         L: ListenerResource,
     {
         let obj: <L as ListenerResource>::Resource = self
@@ -593,14 +593,14 @@ impl World {
             });
 
         let obj = Arc::new(obj);
-        let env = Arc::new(RealEnvironment::new(self.client.clone(), L::NAME));
+        let ops = Arc::new(KubeHandle::new(self.client.clone(), L::NAME));
         let mut extensions = Extensions::new();
         extensions.insert(self.client.clone());
         let extensions = Arc::new(extensions);
-        let ctx = Arc::new(ControllerContext::new(env, extensions));
+        let ctx = Arc::new(ControllerContext::new(ops, extensions));
 
         let listener = L::default();
-        let rec = Reconcile::new(ctx.env(), obj.clone());
+        let rec = Reconcile::new(ctx.ops(), obj.clone());
         listener
             .reconcile(&ctx, obj, rec)
             .execute(L::FINALIZER)
@@ -646,17 +646,17 @@ fn spawn_listener_task<R, L>(
 ) -> tokio::task::AbortHandle
 where
     R: EnvResource + HasConditions + Debug + 'static,
-    L: Listener<RealEnvironment, R> + 'static,
+    L: Listener<R> + 'static,
 {
     let listener = Arc::new(listener);
     tokio::spawn(async move {
-        // Build an environment and populate extensions.  The kube::Client is
+        // Build a KubeHandle and populate extensions.  The kube::Client is
         // always inserted so listeners can call ctx.require::<kube::Client>();
         // any caller-supplied entries are preserved underneath it.
-        let env = Arc::new(RealEnvironment::new(client.clone(), L::NAME));
+        let ops = Arc::new(KubeHandle::new(client.clone(), L::NAME));
         extensions.insert(client.clone());
         let extensions = Arc::new(extensions);
-        let ctrl_ctx = Arc::new(ControllerContext::new(env, extensions));
+        let ctrl_ctx = Arc::new(ControllerContext::new(ops, extensions));
 
         // Wire up the kube-rs Controller watcher for this resource kind.
         let api = Api::<R>::all(client);
@@ -667,10 +667,10 @@ where
             .run(
                 {
                     let listener = Arc::clone(&listener);
-                    move |obj: Arc<R>, ctx: Arc<ControllerContext<RealEnvironment>>| {
+                    move |obj: Arc<R>, ctx: Arc<ControllerContext>| {
                         let listener = Arc::clone(&listener);
                         async move {
-                            let rec = Reconcile::new(ctx.env(), obj.clone());
+                            let rec = Reconcile::new(ctx.ops(), obj.clone());
                             listener
                                 .reconcile(&ctx, obj, rec)
                                 .execute(L::FINALIZER)
@@ -678,9 +678,7 @@ where
                         }
                     }
                 },
-                |_obj, _err, _ctx: Arc<ControllerContext<RealEnvironment>>| {
-                    Action::requeue(Duration::from_secs(5))
-                },
+                |_obj, _err, _ctx: Arc<ControllerContext>| Action::requeue(Duration::from_secs(5)),
                 ctrl_ctx,
             )
             .for_each(|res| async move {
@@ -739,7 +737,7 @@ impl WorldBuilder {
     pub fn listener<R, L>(self, listener: L) -> Self
     where
         R: EnvResource + HasConditions + Debug + 'static,
-        L: Listener<RealEnvironment, R> + 'static,
+        L: Listener<R> + 'static,
     {
         self.listener_with_extensions::<R, L>(listener, Extensions::new())
     }
@@ -751,7 +749,7 @@ impl WorldBuilder {
     pub fn listener_with_extensions<R, L>(mut self, listener: L, extensions: Extensions) -> Self
     where
         R: EnvResource + HasConditions + Debug + 'static,
-        L: Listener<RealEnvironment, R> + 'static,
+        L: Listener<R> + 'static,
     {
         let factory: ListenerFn = Box::new(move |client: kube::Client| {
             spawn_listener_task::<R, L>(client, listener, extensions)

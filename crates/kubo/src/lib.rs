@@ -59,11 +59,13 @@
 //!
 //! # Testability
 //!
-//! All Kubernetes interactions go through the [`Environment`](environment::Environment)
-//! trait. The framework ships a [`TestEnvironment`](testing::TestEnvironment)
-//! that runs entirely in-memory — no cluster needed. Combined with the
-//! [`testing::properties`] module, you can write property-based assertions
-//! over your controller's status progression without any infrastructure.
+//! All Kubernetes interactions go through [`KubeHandle`](environment::KubeHandle),
+//! which wraps a `kube::Client`. In tests, construct a `KubeHandle` from the
+//! client provided by [`World`](testing::World) — which points at a
+//! [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer) — and run the same
+//! production code paths without a real cluster. Enable the `test-support`
+//! feature to access the `testing` module, the `World` simulation API, and
+//! the `#[kubo::test]` / `#[kubo::property_test]` macros.
 //!
 //! # Quick Example
 //!
@@ -71,10 +73,10 @@
 //! use kubo::runtime::Runtime;
 //! use kubo::listener::{Listener, ControllerContext};
 //! use kubo::reconcile::{ReadyReconcile, Reconcile};
-//! use kubo::environment::RealEnvironment;
+//! use kubo::environment::KubeHandle;
 //!
 //! // Wire up the runtime in main():
-//! Runtime::new("my-operator", client, env)
+//! Runtime::new("my-operator", client)
 //!     .with(reqwest::Client::new())
 //!     .listener(DatabaseListener)
 //!     .run()
@@ -83,43 +85,26 @@
 //! // One struct per controller:
 //! pub struct DatabaseListener;
 //!
-//! impl Listener<RealEnvironment, Database> for DatabaseListener {
+//! impl Listener<Database> for DatabaseListener {
 //!     type Status = DatabaseStatus;
 //!
 //!     const NAME: &'static str = "database";
 //!     const FINALIZER: &'static str = "databases.example.com/cleanup";
 //!
-//!     // Optional: decorate the framework-provided controller with
-//!     // `.owns()` / `.watches()`. The default implementation returns
-//!     // it unchanged.
-//!     fn controller(
-//!         &self,
-//!         ctx: &ControllerContext<RealEnvironment>,
-//!         ctrl: Controller<Database>,
-//!     ) -> Controller<Database> {
-//!         let client = ctx.require::<kube::Client>();
-//!         ctrl.owns(Api::<Secret>::all(client.clone()), Config::default())
-//!     }
-//!
 //!     fn reconcile<'a>(
 //!         &'a self,
-//!         ctx: &'a ControllerContext<RealEnvironment>,
+//!         ctx: &'a ControllerContext,
 //!         obj: Arc<Database>,
-//!         rec: Reconcile<'a, RealEnvironment, Database>,
-//!     ) -> ReadyReconcile<'a, RealEnvironment, Database, DatabaseStatus> {
+//!         rec: Reconcile<'a, Database>,
+//!     ) -> ReadyReconcile<'a, Database, DatabaseStatus> {
 //!         rec.ready_reason("Provisioned", "Database and credentials ready")
-//!             .gate(ResolveUpstream { .. })
-//!             .effect(CreateDatabase { .. })
-//!             .effect(CreateCredentialSecret { .. })
-//!             .poll(WaitForReady { .. })
-//!             .status(|state, prev| DatabaseStatus {
-//!                 // Fall back to `prev` so a Wait on an early step never
-//!                 // clobbers a value published on an earlier pass.
-//!                 connection_url: state
-//!                     .get::<CreateDatabase>()
-//!                     .cloned()
-//!                     .or(prev.connection_url.clone()),
-//!             })
+//!            .gate(ResolveUpstream { .. })
+//!            .effect(CreateDatabase { .. })
+//!            .effect(CreateCredentialSecret { .. })
+//!            .poll(WaitForReady { .. })
+//!            .status(|state, _prev| DatabaseStatus {
+//!                connection_url: state.get::<CreateDatabase>().cloned(),
+//!            })
 //!     }
 //! }
 //! ```
@@ -154,13 +139,14 @@ pub use kubo_test_macros::test;
 pub use kubo_test_macros::property_test;
 
 pub use async_trait::async_trait;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 use kube::ResourceExt;
 
+pub use crate::environment::KubeHandle;
 use crate::{
     environment::{EnvResource, EnvironmentError, ObjectRef},
     utils::ConditionContext,
 };
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 
 /// Top-level error returned by individual pipeline steps (gates, effects, polls).
 ///
@@ -170,8 +156,7 @@ use crate::{
 /// typically map into `Env(EnvironmentError::Other(..))`.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
-    /// A Kubernetes API call or serialisation failure surfaced through
-    /// the [`Environment`](environment::Environment) abstraction.
+    /// A Kubernetes API call or serialisation failure.
     #[error("environment error: {0}")]
     Env(#[from] EnvironmentError),
 
@@ -201,22 +186,6 @@ pub trait HasConditions {
     fn conditions(&self) -> Vec<Condition>;
 }
 
-/// Per-step context passed to every gate, effect, and poll invocation.
-///
-/// Bundles the three things a step implementation typically needs:
-///
-/// - `object` — the [`ObjectRef`] (namespace + name) of the resource being
-///   reconciled, for constructing references to sibling resources.
-/// - `condition` — the [`ConditionContext`] for building status conditions
-///   with consistent `observedGeneration` (e.g.
-///   `cx.condition.not_ready_condition("Pending", "waiting")`).
-/// - `cr` — the full custom resource `K`, giving steps read access to the
-///   spec without carrying their own clone.
-///
-/// The framework constructs one per reconcile pass and hands a reference to
-/// each step. The `K` type parameter is the CR type declared by the
-/// pipeline, so steps written against a concrete resource (e.g.
-/// `Gate<E, WebService>`) get typed access to `cx.cr.spec`.
 pub struct ReconcileContext<'a, K> {
     pub object: &'a ObjectRef,
     pub condition: &'a ConditionContext,

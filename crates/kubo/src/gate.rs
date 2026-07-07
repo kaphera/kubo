@@ -4,8 +4,8 @@
 //! it returns a typed value that downstream steps can consume. If not, it returns
 //! a condition and backoff strategy, and the framework requeues.
 //!
-//! Gates never mutate external state. They read from the Kubernetes API (or any
-//! source behind the [`Environment`] trait) and make a pass/wait decision. This
+//! Gates never mutate external state. They read from the Kubernetes API via
+//! [`KubeHandle`](crate::environment::KubeHandle) and make a pass/wait decision. This
 //! makes them inherently idempotent and safe to retry indefinitely.
 //!
 //! # Implementing a Gate
@@ -14,6 +14,7 @@
 //! struct ResolveDatabase {
 //!     name: String,
 //!     namespace: String,
+//!     cx: ConditionContext,
 //! }
 //!
 //! impl StateKey for ResolveDatabase {
@@ -21,19 +22,15 @@
 //! }
 //!
 //! #[async_trait]
-//! impl<E: Environment + Sync> Gate<E, MyResource> for ResolveDatabase {
+//! impl Gate<Database> for ResolveDatabase {
 //!     type Error = MyError;
 //!
-//!     async fn evaluate(
-//!         &self,
-//!         cx: &ReconcileContext<MyResource>,
-//!         env: &E,
-//!     ) -> Result<Outcome<String>, Self::Error> {
-//!         let db = env.get::<Database>(&ObjectRef::new(&self.namespace, &self.name)).await?;
+//!     async fn evaluate(&self, cx: &ReconcileContext<Database>, ops: &KubeHandle) -> Result<Outcome<String>, Self::Error> {
+//!         let db = ops.get::<Database>(&ObjectRef::new(&self.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if is_ready(&db) => Ok(Outcome::Pass(db.status.url.unwrap())),
 //!             _ => Ok(Outcome::Wait {
-//!                 condition: cx.condition.not_ready_condition("DatabasePending", "waiting for database"),
+//!                 condition: self.cx.not_ready_condition("DatabasePending", "waiting for database"),
 //!                 backoff: Box::new(Fixed::new(Duration::from_secs(10))),
 //!             }),
 //!         }
@@ -48,7 +45,7 @@
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
-use crate::{ReconcileContext, backoff::Backoff, environment::Environment, state::StateKey};
+use crate::{ReconcileContext, backoff::Backoff, environment::KubeHandle, state::StateKey};
 
 /// A read-only dependency check that either passes (producing a value) or
 /// waits (producing a condition for status and a backoff for requeue timing).
@@ -57,7 +54,7 @@ use crate::{ReconcileContext, backoff::Backoff, environment::Environment, state:
 /// inserts the `Pass` value into the pipeline's [`State`](crate::state::State)
 /// bag automatically — gates never touch state directly.
 #[async_trait]
-pub trait Gate<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
+pub trait Gate<K: Send + Sync = ()>: StateKey {
     /// The error type returned when the gate encounters an unrecoverable failure.
     ///
     /// Must implement `Into<ReconcilerError>` so the framework can propagate it.
@@ -71,7 +68,7 @@ pub trait Gate<E: Environment + Sync, K: Send + Sync = ()>: StateKey {
     async fn evaluate(
         &self,
         cx: &ReconcileContext<K>,
-        env: &E,
+        ops: &KubeHandle,
     ) -> Result<Outcome<<Self as StateKey>::Value>, Self::Error>;
 }
 
