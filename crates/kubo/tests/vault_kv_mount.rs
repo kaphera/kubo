@@ -698,10 +698,15 @@ async fn run_apply_full_pipeline() {
 }
 
 /// Full cleanup pass: effects cleanup in reverse, finalizer is removed.
+///
+/// Under the pending-cleanup ledger, cleanup only runs for effects that
+/// actually completed `apply`. This test therefore drives the full
+/// lifecycle: an apply pass populates the ledger, then a deletion-triggered
+/// pass runs cleanup and removes the finalizer.
 #[tokio::test]
 async fn run_cleanup_removes_finalizer() {
-    let world = World::builder().build().await;
-    let obj = make_kvm("test-ns", "my-kvm", true);
+    let world = world_with_ready_vault_instance("test-ns", "my-vault", "http://vault:8200").await;
+    let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
 
     let ops = ops_for(&world);
@@ -710,7 +715,51 @@ async fn run_cleanup_removes_finalizer() {
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let action = Reconcile::new(&ops, obj.clone())
+    // 1. Apply pass: gate passes, both effects run, ledger is populated.
+    Reconcile::new(&ops, obj.clone())
+        .ready_reason("MountReady", "KV-v2 mount is provisioned")
+        .gate(ResolveVaultInstance {
+            instance_ref: "my-vault".to_string(),
+        })
+        .effect(EnableKv2Mount {
+            vault_available: vault_available.clone(),
+            cleaned_up: effect1_cleaned.clone(),
+        })
+        .effect(CreateAccessSecret {
+            secret_name: "access-secret".to_string(),
+            cleaned_up: effect2_cleaned.clone(),
+        })
+        .execute("test-finalizer", |_state, _prev: &VaultKvMountFields| {
+            VaultKvMountFields {
+                mount_path: None,
+                resolved_instance_ref: None,
+            }
+        })
+        .await
+        .unwrap();
+
+    // The apply pass must have recorded both effects in the ledger.
+    let after_apply = world.get::<VaultKvMount>("test-ns", "my-kvm").unwrap();
+    let ledger = &after_apply.status.as_ref().unwrap().pending_cleanup;
+    assert_eq!(
+        ledger.len(),
+        2,
+        "ledger should hold both effects after apply"
+    );
+
+    // Neither effect should have been cleaned up yet.
+    assert!(!effect1_cleaned.load(Ordering::Relaxed));
+    assert!(!effect2_cleaned.load(Ordering::Relaxed));
+
+    // 2. Delete the object, then run the cleanup pass.
+    world.delete::<VaultKvMount>("test-ns", "my-kvm").await;
+    let deleting = world.get::<VaultKvMount>("test-ns", "my-kvm").unwrap();
+    let deleting = Arc::new(deleting);
+
+    let action = Reconcile::new(&ops, deleting)
+        .gate(ResolveVaultInstance {
+            instance_ref: "my-vault".to_string(),
+        })
         .effect(EnableKv2Mount {
             vault_available: vault_available.clone(),
             cleaned_up: effect1_cleaned.clone(),
@@ -731,7 +780,7 @@ async fn run_cleanup_removes_finalizer() {
     // Should signal await_change (cleanup done).
     assert_eq!(action, Action::await_change());
 
-    // Both effects should have been cleaned up.
+    // Both effects should have been cleaned up (reverse order: effect2 then effect1).
     assert!(effect1_cleaned.load(Ordering::Relaxed));
     assert!(effect2_cleaned.load(Ordering::Relaxed));
 
@@ -739,6 +788,13 @@ async fn run_cleanup_removes_finalizer() {
     let stored = world.get::<VaultKvMount>("test-ns", "my-kvm").unwrap();
     let finalizers = stored.metadata.finalizers.unwrap_or_default();
     assert!(!finalizers.contains(&"test-finalizer".to_string()));
+
+    // Ledger should be empty after successful cleanup.
+    let ledger_after = &stored.status.as_ref().unwrap().pending_cleanup;
+    assert!(
+        ledger_after.is_empty(),
+        "ledger should be empty after cleanup"
+    );
 }
 
 /// Gate returns Wait: pipeline stops, status is patched with condition,

@@ -146,4 +146,25 @@ pub trait Effect<K: Send + Sync = ()>: StateKey {
         let _ = ops;
         Ok(CleanupAction::Skip)
     }
+
+    /// A stable, release-independent ledger key for this effect.
+    ///
+    /// The pending-cleanup ledger records each effect that has completed
+    /// [`apply`](Effect::apply) so that [`cleanup`](Effect::cleanup) only
+    /// runs for effects that actually applied. By default the ledger
+    /// keys on the effect's Rust type name
+    /// (`std::any::type_name::<Self>()`), which is unique within a
+    /// pipeline but **orphans the ledger entry if the struct is renamed
+    /// across a release** — the framework logs and drops it, and the old
+    /// external resource may leak.
+    ///
+    /// Override this to return `Some("stable.name")` for any effect whose
+    /// `cleanup` deletes external state that must not leak. The pinned
+    /// name must be unique within the pipeline and stable across
+    /// releases; it survives effect struct renames, so a renamed effect
+    /// still matches its old ledger entry and tears down the resource it
+    /// originally created.
+    fn effect_name(&self) -> Option<&'static str> {
+        None
+    }
 }

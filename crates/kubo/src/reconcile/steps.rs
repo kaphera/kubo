@@ -25,6 +25,10 @@ pub(super) trait ApplyStep<K: Send + Sync>: Send + Sync {
         ops: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress;
+
+    fn effect_name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 #[async_trait]
@@ -34,6 +38,10 @@ pub(super) trait CleanableStep<K: Send + Sync>: Send + Sync {
         cx: &'a ReconcileContext<K>,
         ops: &'a KubeHandle,
     ) -> CleanupProgress;
+
+    fn effect_name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 pub(super) enum CleanupProgress {
@@ -162,11 +170,18 @@ where
 
 pub(super) struct EffectStep<F> {
     effect: F,
+    name: &'static str,
 }
 
 impl<F> EffectStep<F> {
-    pub fn new(effect: F) -> Self {
-        Self { effect }
+    pub fn new<K: Send + Sync>(effect: F) -> Self
+    where
+        F: Effect<K>,
+    {
+        let name = effect
+            .effect_name()
+            .unwrap_or_else(|| std::any::type_name::<F>());
+        Self { effect, name }
     }
 }
 
@@ -195,6 +210,10 @@ where
             Err(e) => StepProgress::Error(e.into()),
         }
     }
+
+    fn effect_name(&self) -> Option<&'static str> {
+        Some(self.name)
+    }
 }
 
 #[async_trait]
@@ -215,6 +234,10 @@ where
             Ok(CleanupAction::Retry(backoff)) => CleanupProgress::Retry(backoff),
             Err(e) => CleanupProgress::Error(e.into()),
         }
+    }
+
+    fn effect_name(&self) -> Option<&'static str> {
+        Some(self.name)
     }
 }
 

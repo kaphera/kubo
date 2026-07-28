@@ -83,9 +83,12 @@ pub fn make_dummy(ns: &str, name: &str) -> DummyResource {
 /// tests where the spec is strategy-generated.
 ///
 /// ```ignore
-/// #[strategy(any_dummy_spec())] spec: DummySpec,
-/// // ...
-/// let obj_ref = world.seed_obj(dummy_from_spec("ns", "obj", spec));
+/// fn my_test(
+///     #[strategy(any_dummy_spec())] spec: DummySpec,
+/// ) {
+///     // ...
+///     let obj_ref = world.seed_obj(dummy_from_spec("ns", "obj", spec));
+/// }
 /// ```
 pub fn dummy_from_spec(ns: &str, name: &str, spec: DummySpec) -> DummyResource {
     DummyResource {

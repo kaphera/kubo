@@ -248,11 +248,13 @@ Downstream effects retrieve the hash with `state.require::<ApplyConfigMap<WebSer
 
 ## Pipeline Lifecycle
 
-On **apply** (no deletion timestamp), the framework ensures the finalizer is present, runs each step in declaration order, and patches `ResourceStatus<T>` (which wraps your domain type with conditions and `observedGeneration`) after every step that changes it. Once all steps pass, it requeues at the configured steady-state interval.
+On **apply** (no deletion timestamp), the framework ensures the finalizer is present, runs each step in declaration order, and patches `ResourceStatus<T>` (which wraps your domain type with conditions and `observedGeneration`) after every step that changes it. As each effect completes (`EffectOutcome::Done`), the framework records the effect's identity in the `pendingCleanup` field of `ResourceStatus<T>` — a framework-owned ledger of effects that have applied but not yet been torn down. Once all steps pass, it requeues at the configured steady-state interval.
 
-On **cleanup** (deletion timestamp present), effect `cleanup` methods run in reverse declaration order. If any cleanup returns `Retry`, the pipeline requeues with backoff and resumes from that step on the next pass. The finalizer is removed only after all cleanups succeed.
+On **cleanup** (deletion timestamp present), effect `cleanup` methods run in reverse declaration order, **filtered by the `pendingCleanup` ledger** — cleanup only runs for effects that actually completed `apply`. After each successful cleanup the entry is struck off and the shrunk ledger is patched back to status, giving real resumability: a `Retry` resumes from the failed effect and skips effects already cleaned up. If any cleanup returns `Retry`, the pipeline requeues with backoff and **keeps the finalizer** so the object survives for the next pass. The finalizer is removed only after all cleanups succeed. Ledger entries that match no registered cleanup step (e.g. after an effect rename or removal) are logged and dropped — blocking deletion forever on absent code is worse than leaking the orphaned resource.
 
 `.execute(FINALIZER)` runs the full lifecycle. `.converge()` runs the pipeline only, with no finalizer management — useful for resources you don't own the deletion of.
+
+`.effect(effect)` records the effect's identity in the ledger. By default the ledger key is the effect's Rust type name, so a struct rename across a release silently orphans the old `type_name`-keyed entry — the framework logs and drops it, and the old external resource may leak. For effects whose `cleanup` deletes external state that must not leak, override `Effect::effect_name` to return a stable, release-independent name; the pinned key survives struct renames so cleanup still matches the original apply.
 
 `.rotation_annotation(key)` triggers a full re-run of effects when the annotation value changes, enabling credential rotation without a deletion/recreation cycle.
 

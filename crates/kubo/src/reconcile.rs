@@ -159,6 +159,17 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
     /// Add an effect. During apply, effects run after all preceding
     /// gates have passed. During cleanup, effects run in **reverse**
     /// declaration order via [`Effect::cleanup`].
+    ///
+    /// The effect's pending-cleanup ledger entry is keyed by its Rust type
+    /// name (`std::any::type_name::<F>()`) unless the effect overrides
+    /// [`Effect::effect_name`](crate::effect::Effect::effect_name) to pin a
+    /// stable, release-independent string. The type-name default is
+    /// correct by construction for uniqueness within a pipeline, but
+    /// **renaming the effect struct across a release orphans the old ledger
+    /// entry** — the framework logs and drops it, and the old external
+    /// resource may leak. For effects whose `cleanup` deletes external
+    /// state that must not leak, override `Effect::effect_name` with a
+    /// stable name so the entry survives the rename.
     pub fn effect<F>(mut self, effect: F) -> Self
     where
         F: Effect<R> + StateKey + Send + Sync + 'r,
@@ -269,11 +280,22 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         });
 
         if is_deleting {
-            self.run_cleanup::<T, F>(&obj_ref, &prev_resource, &build_status)
-                .await
+            self.run_cleanup::<T, F>(
+                &obj_ref,
+                &prev_resource,
+                &prev_wrapped.pending_cleanup,
+                &build_status,
+            )
+            .await
         } else {
-            self.run_apply::<T, F>(&obj_ref, &prev_resource, &build_status, has_rotation)
-                .await
+            self.run_apply::<T, F>(
+                &obj_ref,
+                &prev_resource,
+                &prev_wrapped.pending_cleanup,
+                &build_status,
+                has_rotation,
+            )
+            .await
         }
     }
 
@@ -310,14 +332,16 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
 
             let action = self.converge::<T, F>(build_status).await?;
 
-            let namespace = self.obj.meta().namespace.clone().unwrap_or_default();
-            let name = self.obj.meta().name.clone().unwrap_or_default();
-            let obj_ref = ObjectRef::new(&namespace, &name);
-            let finalizers: Vec<String> = existing_finalizers
-                .into_iter()
-                .filter(|f| f.as_str() != finalizer_name)
-                .collect();
-            self.ops.patch_finalizers::<R>(&obj_ref, finalizers).await?;
+            if action == Action::await_change() {
+                let namespace = self.obj.meta().namespace.clone().unwrap_or_default();
+                let name = self.obj.meta().name.clone().unwrap_or_default();
+                let obj_ref = ObjectRef::new(&namespace, &name);
+                let finalizers: Vec<String> = existing_finalizers
+                    .into_iter()
+                    .filter(|f| f.as_str() != finalizer_name)
+                    .collect();
+                self.ops.patch_finalizers::<R>(&obj_ref, finalizers).await?;
+            }
             Ok(action)
         } else {
             if !existing_finalizers.iter().any(|f| f == finalizer_name) {
@@ -392,6 +416,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         &mut self,
         obj_ref: &ObjectRef,
         prev_resource: &T,
+        prev_pending_cleanup: &[String],
         build_status: &F,
         rotation_key: Option<&str>,
     ) -> Result<Action, ReconcileError>
@@ -403,6 +428,8 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         let generation = self.obj.meta().generation.unwrap_or(0);
         let mut state = State::new();
         let mut last_patched: Option<ResourceStatus<T>> = None;
+
+        let mut pending_cleanup: Vec<String> = prev_pending_cleanup.to_vec();
 
         // Signal rotation to effects via the state bag.
         if rotation_key.is_some() {
@@ -418,10 +445,16 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         for step in self.apply_steps.iter() {
             match step.run_apply(&cx, ops, &mut state).await {
                 StepProgress::Continue => {
+                    if let Some(name) = step.effect_name() {
+                        if !pending_cleanup.iter().any(|n| n == name) {
+                            pending_cleanup.push(name.to_string());
+                        }
+                    }
                     let resource = build_status(&state, prev_resource);
                     let wrapped = ResourceStatus {
                         conditions: self.conditions.clone(),
                         observed_generation: Some(generation),
+                        pending_cleanup: pending_cleanup.clone(),
                         resource,
                     };
                     if last_patched.as_ref() != Some(&wrapped) {
@@ -436,6 +469,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                     let wrapped = ResourceStatus {
                         conditions: self.conditions.clone(),
                         observed_generation: Some(generation),
+                        pending_cleanup: pending_cleanup.clone(),
                         resource,
                     };
                     if last_patched.as_ref() != Some(&wrapped) {
@@ -452,6 +486,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         let wrapped = ResourceStatus {
             conditions: self.conditions.clone(),
             observed_generation: Some(generation),
+            pending_cleanup: pending_cleanup.clone(),
             resource,
         };
         if last_patched.as_ref() != Some(&wrapped) {
@@ -474,12 +509,27 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
 
     /// Walk effects in reverse, calling cleanup on each.
     ///
+    /// The walk is filtered by the pending-cleanup ledger persisted in
+    /// status: `cleanup` only runs for effects whose name appears in the
+    /// ledger, i.e. effects that actually completed `apply`. After each
+    /// successful cleanup the entry is struck off and the shrunk ledger is
+    /// patched back to status, giving real resumability across cleanup
+    /// retries — a retry resumes from the failed effect and skips effects
+    /// already cleaned up.
+    ///
+    /// Orphaned entries — names in the ledger that no registered cleanup
+    /// step matches (e.g. after an effect rename or removal) — are logged
+    /// and dropped. Blocking deletion forever on absent code is worse than
+    /// leaking the orphaned external resource; the operator author can
+    /// reconcile manually.
+    ///
     /// Status patches that fail with 404 are tolerated — the resource may
     /// have been garbage-collected before cleanup completes.
     async fn run_cleanup<T, F>(
         &self,
         obj_ref: &ObjectRef,
         prev_resource: &T,
+        prev_pending_cleanup: &[String],
         build_status: &F,
     ) -> Result<Action, ReconcileError>
     where
@@ -496,9 +546,29 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
             cr: &*self.obj,
         };
 
+        let mut outstanding: Vec<String> = prev_pending_cleanup.to_vec();
+
         for step in self.cleanup_steps.iter().rev() {
+            let Some(name) = step.effect_name() else {
+                continue;
+            };
+
+            if !outstanding.iter().any(|n| n == name) {
+                continue;
+            }
+
             match step.run_cleanup(&cx, ops).await {
-                CleanupProgress::Continue => continue,
+                CleanupProgress::Continue => {
+                    outstanding.retain(|n| n != name);
+                    let resource = build_status(&state, prev_resource);
+                    let wrapped = ResourceStatus {
+                        conditions: self.conditions.clone(),
+                        observed_generation: Some(generation),
+                        pending_cleanup: outstanding.clone(),
+                        resource,
+                    };
+                    let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
+                }
                 CleanupProgress::Retry(backoff) => {
                     let retry_after = backoff.next(BackoffContext {
                         emitting: &Condition {
@@ -516,6 +586,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                     let wrapped = ResourceStatus {
                         conditions: self.conditions.clone(),
                         observed_generation: Some(generation),
+                        pending_cleanup: outstanding.clone(),
                         resource,
                     };
                     let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
@@ -525,10 +596,19 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
             }
         }
 
+        for orphan in &outstanding {
+            warn!(
+                obj = %obj_ref,
+                effect = %orphan,
+                "pending-cleanup ledger entry matches no registered cleanup step; dropping (effect renamed or removed?)",
+            );
+        }
+
         let resource = build_status(&state, prev_resource);
         let wrapped = ResourceStatus {
             conditions: self.conditions.clone(),
             observed_generation: Some(generation),
+            pending_cleanup: Vec::new(),
             resource,
         };
         let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
@@ -577,6 +657,10 @@ where
     ) -> StepProgress {
         self.0.run_apply(cx, ops, state).await
     }
+
+    fn effect_name(&self) -> Option<&'static str> {
+        self.0.effect_name()
+    }
 }
 
 struct SharedCleanableStep<T>(Arc<T>);
@@ -593,6 +677,10 @@ where
         ops: &'a KubeHandle,
     ) -> CleanupProgress {
         self.0.run_cleanup(cx, ops).await
+    }
+
+    fn effect_name(&self) -> Option<&'static str> {
+        self.0.effect_name()
     }
 }
 

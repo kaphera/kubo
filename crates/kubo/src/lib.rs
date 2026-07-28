@@ -51,11 +51,16 @@
 //! 2. Runs each step in declaration order.
 //! 3. After each step, evaluates the status closure and patches status if changed.
 //! 4. If a step returns `Wait`, patches the condition and requeues with backoff.
-//! 5. If all steps pass, sets `Ready=True` and requeues at the steady-state interval.
+//! 5. As each effect completes (`EffectOutcome::Done`), records the effect's identity in `ResourceStatus<T>::pending_cleanup` — a framework-owned ledger of effects that have applied but not yet been torn down.
+//! 6. If all steps pass, sets `Ready=True` and requeues at the steady-state interval.
 //!
 //! On **cleanup** (deletion timestamp present, finalizer found), the framework:
-//! 1. Runs effect cleanup methods in reverse declaration order.
-//! 2. Removes the finalizer once all cleanups succeed.
+//! 1. Runs effect `cleanup` methods in reverse declaration order, **filtered by the `pendingCleanup` ledger** — cleanup only runs for effects that actually completed `apply`.
+//! 2. Strikes each effect off the ledger after its cleanup succeeds and patches the shrunk ledger back to status, giving resumability: a `Retry` resumes from the failed effect and skips effects already cleaned up.
+//! 3. If any cleanup returns `Retry`, requeues with backoff and **keeps the finalizer** so the object survives for the next pass.
+//! 4. Removes the finalizer only after all cleanups succeed. Ledger entries that match no registered cleanup step (e.g. after an effect rename or removal) are logged and dropped — blocking deletion forever on absent code is worse than leaking the orphaned resource.
+//!
+//! The ledger keys on the effect's Rust type name by default; override [`Effect::effect_name`](effect::Effect::effect_name) to pin a stable, release-independent key for effects whose `cleanup` must not leak on rename.
 //!
 //! # Testability
 //!
@@ -75,12 +80,13 @@
 //! use kubo::reconcile::{ReadyReconcile, Reconcile};
 //! use kubo::environment::KubeHandle;
 //!
-//! // Wire up the runtime in main():
-//! Runtime::new("my-operator", client)
-//!     .with(reqwest::Client::new())
-//!     .listener(DatabaseListener)
-//!     .run()
-//!     .await
+//! async fn main() {
+//!     Runtime::new("my-operator", client)
+//!         .with(reqwest::Client::new())
+//!         .listener(DatabaseListener)
+//!         .run()
+//!         .await
+//! }
 //!
 //! // One struct per controller:
 //! pub struct DatabaseListener;
