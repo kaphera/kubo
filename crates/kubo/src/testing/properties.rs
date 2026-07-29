@@ -269,8 +269,12 @@ pub fn check_eventually<S>(
 
 // ─── Ordered ─────────────────────────────────────────────────────────
 
-/// `first` must become true at a tick index strictly before where
-/// `second` first becomes true. Verifies temporal ordering.
+/// The first tick where `first` is true must not come after the first tick
+/// where `second` is true. Both may first become true on the same tick.
+/// The check passes if `second` never becomes true; it fails if `second`
+/// becomes true while `first` never does, or if the first `first` tick is
+/// at a strictly greater index than the first `second` tick. Verifies
+/// temporal ordering.
 pub fn assert_ordered<S>(
     ticks: &[S],
     first: impl Fn(&S) -> bool,

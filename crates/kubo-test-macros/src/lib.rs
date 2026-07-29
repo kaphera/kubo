@@ -30,22 +30,38 @@ use syn::{FnArg, ItemFn, LitInt, Token, Type, parse::Parse, parse_macro_input};
 /// | Attribute          | Semantics                                                                         |
 /// |--------------------|-----------------------------------------------------------------------------------|
 /// | *(none)*           | Run once; seed from `SEED` env var (default `0`).                                |
-/// | `iterations = N`   | Run N times with seeds `0..N`; `SEED` pins to one run, `ITERATIONS` overrides N. |
+/// | `iterations = N`   | With `N > 1`: run N times with seeds `0..N`; `SEED` pins to one run, `ITERATIONS` overrides N. With `N = 0` or `1`: single run, unless another trigger forces the multi-run path (see below). |
 /// | `seed = N`         | Run once with exactly seed N (env vars ignored).                                  |
 /// | `seeds = [a,b,c]`  | Run with each listed seed (env vars ignored).                                     |
 /// | `retries = N`      | Retry up to N additional times on failure before reporting.                       |
 ///
 /// # Execution strategy
 ///
-/// **Single-run tests** (default, `seed = N`, `iterations = 1`) run the body
-/// directly in the test task — no extra `spawn`.  A RAII guard prints the seed
-/// to stderr when the test panics, without disrupting tokio's cooperative
-/// scheduling.  This preserves the exact scheduling behaviour that multi-world
-/// tests depend on.
+/// **Single-run tests** (default, `seed = N`, `iterations = 0` or `1`, or a
+/// one-element `seeds` list) run the body directly in the test task — no
+/// extra task is spawned.  A RAII guard prints the seed to stderr when the
+/// test panics.
 ///
-/// **Multi-run tests** (`iterations = N` with N > 1, `seeds = [a,b,c]`,
-/// `retries = N`) use `tokio::task::spawn` to isolate each attempt so that
-/// panics can be caught, annotated with the seed, and re-raised cleanly.
+/// **Multi-run tests** (`iterations = N` with `N > 1`, `seeds` with more
+/// than one entry, or `retries > 0`) use `tokio::task::spawn` to isolate
+/// each attempt so that panics can be caught, annotated with the seed, and
+/// re-raised cleanly.  `retries > 0` or a multi-entry `seeds` list forces
+/// the multi-run path regardless of the `iterations` or `seed` attribute.
+///
+/// # Environment variables
+///
+/// - `SEED` — parsed as `u64` (unparseable falls back to `0`).  On the
+///   single-run path it is the seed; on the multi-run path it pins the run
+///   to a single iteration with that seed.  Ignored when a `seed`/`seeds`
+///   attribute is present.
+/// - `ITERATIONS` — parsed as `u64` (falls back to the `iterations`
+///   attribute value, or `1` if absent).  Read only on the multi-run path;
+///   a single-run test never reads it.  Ignored when a `seed`/`seeds`
+///   attribute is present.  A value of `0` produces an empty seed list:
+///   the body never runs and the test passes.
+///
+/// If both `seed` and `seeds` attributes are present, the last one in
+/// attribute order wins.
 ///
 /// # Single-world form
 ///
@@ -324,9 +340,25 @@ fn is_world_ref_mut(ty: &Type) -> bool {
 
 /// Property test attribute macro for kubo controller tests.
 ///
-/// Wraps the annotated async function in a `proptest` runner.  Each proptest
-/// case runs in a fresh `tokio` paused-time runtime so time-control methods
-/// work correctly.
+/// Generates a single `#[tokio::test(start_paused = true)]` function.  Every
+/// proptest case runs as a `tokio::task::spawn` inside that one paused-time
+/// runtime, so the paused clock is shared across cases and time-control
+/// methods work correctly.
+///
+/// # Case generation and execution
+///
+/// Cases are generated synchronously before the test body runs: the macro
+/// calls `Strategy::new_tree` once per case and reads `ValueTree::current`.
+/// Cases run in generation order; the first failing case stops the run, and
+/// the seed and case index are printed to stderr.  Cases are not shrunk.  A
+/// case whose `new_tree` call returns `Err` is silently skipped.
+///
+/// # Case count
+///
+/// The case count is read from the `PROPTEST_CASES` environment variable,
+/// parsed as `u32` (default `8`; an unparseable value falls back to `8`).
+/// `PROPTEST_CASES=0` runs no cases and the test passes without executing
+/// the body.
 ///
 /// # Parameters
 ///
@@ -336,21 +368,33 @@ fn is_world_ref_mut(ty: &Type) -> bool {
 ///   proptest's strategy API.  The expression is evaluated once and used for
 ///   every case.
 ///
+/// # Signature
+///
+/// The generated test replaces the whole function signature: generics, where
+/// clauses, and the return type are discarded.  Parameters that are neither
+/// `&mut World` (final path segment `World`) nor `#[strategy]`-annotated are
+/// dropped from the generated signature.
+///
+/// # Attribute options
+///
+/// `#[kubo::property_test]` accepts no attribute options; any options present
+/// are silently discarded (e.g. `iterations = 5` compiles and does nothing).
+///
 /// # Seed bridging
 ///
 /// When the `SEED` environment variable is set, both the `World`'s RNG and
 /// proptest's case-generation RNG are seeded from that value, making a
-/// failing case byte-for-byte reproducible:
+/// failing case reproducible:
 ///
 /// ```sh
-/// SEED=42 cargo test dummy_listener_well_behaved
+/// SEED=42 cargo test ops_sequence_well_behaved
 /// ```
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// #[kubo::property_test]
-/// async fn dummy_listener_well_behaved(
+/// async fn ops_sequence_well_behaved(
 ///     world: &mut World,
 ///     #[strategy(op_sequence(16))] ops: Vec<Op<DummyResource>>,
 /// ) {
@@ -462,8 +506,6 @@ pub fn property_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0u64);
 
-            // Number of cases: PROPTEST_CASES env var (default 32 — matches
-            // the default for `#[kubo::test(iterations = N)]`).
             let __cases: u32 = ::std::env::var("PROPTEST_CASES")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok())

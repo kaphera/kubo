@@ -195,13 +195,16 @@
 //! in-memory cluster backed by `kubo_test_fakeapi::FakeApiServer` with a real
 //! `kube::Client` in front of it, so pipelines exercise the same code paths
 //! as production. Time is paused and the world's RNG is seeded, so
-//! runs are reproducible: set `SEED` to replay one run, `ITERATIONS` to run
-//! across seeds (when both are set, `SEED` takes precedence and a single run
+//! runs are reproducible: set `SEED` to replay one run, set `ITERATIONS` to
+//! run across seeds (read only on the multi-run path — a plain `#[kubo::test]`
+//! ignores it; when both are set, `SEED` takes precedence and a single run
 //! executes), or pin seeds with the `seed`/`seeds` attribute options. The
 //! `#[kubo::test]` macro wraps a test in paused-time tokio, builds a `World`
 //! for each `&mut World` parameter, and prints the replay seed to stderr on
 //! failure; `#[kubo::property_test]` additionally draws parameters from
-//! proptest strategies. `World::fault` injects faults (conflict, not-found,
+//! proptest strategies (both macros are also available as
+//! `kubo::testing::test` and `kubo::testing::property_test`). `World::fault`
+//! injects faults (conflict, not-found,
 //! internal, throttled, latency, disconnect) into mutable operations; random
 //! triggering is drawn from the world's seeded RNG.
 //!

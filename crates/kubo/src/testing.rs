@@ -3,8 +3,8 @@
 //! The [`World`] type runs a full `Reconcile` pipeline against an
 //! in-memory store backed by [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer) —
 //! no cluster needed.  In production, a `KubeHandle` wraps a real `kube::Client`;
-//! in tests, you construct one from `World::client()` and run the same
-//! production code paths through the fake.
+//! in tests, [`World::env`] constructs one around the fake's client, and the
+//! same production code paths run through the fake.
 //!
 //! Property assertion functions live in [`properties`].
 //! Import them from there:

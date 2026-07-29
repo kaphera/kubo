@@ -1,6 +1,6 @@
 //! `kubo::testing` — simulation runtime and test utilities for kubo controllers.
 //!
-//! The centrepiece is [`World`]: a simulated Kubernetes cluster backed by
+//! The centerpiece is [`World`]: a simulated Kubernetes cluster backed by
 //! [`FakeApiServer`].  Each `World` owns a
 //! real [`kube::Client`] that speaks HTTP to the fake, so every reconcile
 //! pipeline the test drives runs the same production code paths it would in a
@@ -10,14 +10,14 @@
 //!
 //! - [`WorldBuilder::listener`] — register a [`Listener`] to
 //!   run as a background task inside the test's tokio runtime.
-//! - [`World::run_until_idle`] — yield until all spawned controller tasks have
-//!   settled (no more ready work with the current clock value).
+//! - [`World::run_until_idle`] — yield a fixed number of times (200), giving
+//!   spawned controller tasks a chance to run.
 //! - [`World::step`] — a single cooperative yield point.
 //! - [`World::advance`] — advance paused tokio time by a [`Duration`] then
-//!   run until idle.  Requires the test to use paused time
-//!   (`#[tokio::test(start_paused = true)]`).
-//! - [`World::forbid_parking`] / [`World::allow_parking`] — parking-detection
-//!   flags (checked on future calls to `run_until_idle`).
+//!   call [`run_until_idle`](World::run_until_idle).  Requires the test to use
+//!   paused time (`#[tokio::test(start_paused = true)]`).
+//! - [`World::forbid_parking`] / [`World::allow_parking`] — parking-policy
+//!   flags recorded on the `World`; not consulted by any runtime path.
 //!
 //! ## Asserting properties
 //!
@@ -109,7 +109,7 @@ pub trait ListenerResource {
 ///
 /// Listeners registered via [`WorldBuilder::listener`] run as background tasks
 /// on the same tokio runtime as the test.  Call [`World::run_until_idle`] to
-/// yield until all reconciles triggered by the current clock have completed.
+/// yield a fixed number of times, giving those tasks a chance to run.
 pub struct World {
     fake: FakeApiServer,
     client: kube::Client,
@@ -172,12 +172,12 @@ impl World {
 
     /// Pre-populate the cluster with a typed object.
     ///
-    /// Serialises `obj` and inserts it directly into the fake's store,
+    /// Serializes `obj` and inserts it directly into the fake's store,
     /// bypassing HTTP.  This is the idiomatic way to seed upstream
     /// dependencies before running a reconcile pipeline.
     ///
     /// The name `prefill` distinguishes this from [`World::seed`] (which
-    /// returns the numeric RNG seed) while preserving the same semantics.
+    /// returns the numeric RNG seed).
     pub fn prefill<T: EnvResource>(&self, obj: T) -> &Self {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
@@ -248,10 +248,11 @@ impl World {
     }
 
     /// Returns the ordered history of status values patched onto `(ns, name)`,
-    /// deserialised as `S`.
+    /// deserialized as `S`.
     ///
     /// Each entry corresponds to one `PATCH .../status` call made during
-    /// a reconcile pass.  Use this with `kubo::testing::properties` to assert
+    /// a reconcile pass.  Entries that fail to deserialize as `S` are silently
+    /// skipped.  Use this with `kubo::testing::properties` to assert
     /// on status progression.
     pub fn status_ticks<S: DeserializeOwned>(&self, ns: &str, name: &str) -> Vec<S> {
         self.fake
@@ -291,7 +292,8 @@ impl World {
 
     // ── Time-control methods ──────────────────────────────────────────────────
 
-    /// Yield once, giving other tasks (controllers, Tower workers) one turn.
+    /// Yield once, giving other tasks (controller watcher loops, reconcile
+    /// tasks) one turn.
     ///
     /// A single call is usually not enough for a full reconcile cycle; prefer
     /// [`run_until_idle`](Self::run_until_idle) for that.
@@ -299,25 +301,24 @@ impl World {
         tokio::task::yield_now().await;
     }
 
-    /// Yield repeatedly until all background work visible at the current clock
-    /// value has completed.
+    /// Yield a fixed number of times (200), giving spawned tasks a chance to run.
     ///
-    /// Each call to `yield_now()` gives the tokio executor one turn to run
-    /// spawned tasks (controller watcher loop, Tower buffer workers, reconcile
-    /// tasks).  200 rounds is enough for any realistic pipeline depth; with
-    /// paused time, the cost is negligible since all yields resolve immediately.
+    /// Each `yield_now()` gives the tokio executor one turn to run spawned tasks
+    /// (controller watcher loops, reconcile tasks).  The method returns after
+    /// the fixed budget regardless of whether work remains: pipelines needing
+    /// more cooperative turns are not fully drained, and a task stuck waiting
+    /// on non-timer I/O does not settle — the method returns anyway.
     ///
-    /// If [`forbid_parking`](Self::forbid_parking) is active (the default) and
-    /// a task is stuck waiting on something that cannot complete without an
-    /// external stimulus, the test will hang here — which is the intended
-    /// signal that something is wrong with the pipeline under test.
+    /// Parking detection ([`forbid_parking`](Self::forbid_parking)) is not
+    /// implemented: the flag is recorded but never consulted.
     pub async fn run_until_idle(&self) {
         for _ in 0..200 {
             tokio::task::yield_now().await;
         }
     }
 
-    /// Advance paused tokio time by `duration`, then run until idle.
+    /// Advance paused tokio time by `duration`, then call
+    /// [`run_until_idle`](Self::run_until_idle).
     ///
     /// This wakes any timers (requeue sleeps, backoff sleeps) whose deadline
     /// falls within the advanced window.  Requires the enclosing test to use
@@ -336,7 +337,7 @@ impl World {
     }
 
     /// Advance paused tokio time by `total`, divided into chunks of `step`,
-    /// running until idle after each chunk.
+    /// calling [`run_until_idle`](Self::run_until_idle) after each chunk.
     ///
     /// A single [`advance`](Self::advance) call only fires timers that already
     /// exist at the moment it is called.  After a reconcile error the
@@ -373,10 +374,9 @@ impl World {
         }
     }
 
-    /// Stub: advance to the next scheduled timer and run until idle.
+    /// Not implemented: the body performs a single cooperative yield.
     ///
-    /// Not yet implemented — use [`advance`](Self::advance) with an explicit
-    /// `Duration` for now.
+    /// Use [`advance`](Self::advance) with an explicit `Duration` instead.
     pub async fn advance_to_next_timer(&self) {
         // Introspecting the timer queue requires tokio internals not yet
         // exposed.  Use advance(Duration) until this is implemented.
@@ -386,16 +386,19 @@ impl World {
     /// Enable or disable watch event fuzzing on this world's fake API server.
     ///
     /// When enabled, watch events generated by mutable operations (`create`,
-    /// `delete`, status patches, finalizer patches) are held in a per-tick
-    /// buffer rather than broadcast immediately.  At the start of each
-    /// [`advance`](Self::advance) step the buffer is shuffled using the world's
-    /// seeded RNG, then broadcast to all watch subscribers.
+    /// `delete`, status patches, finalizer patches, and direct inserts via
+    /// [`prefill`](Self::prefill) or [`seed_obj`](Self::seed_obj)) are held
+    /// in a per-tick buffer rather than broadcast immediately.  During each
+    /// [`advance`](Self::advance) call, after the clock moves and before
+    /// [`run_until_idle`](Self::run_until_idle), the buffer is shuffled using
+    /// the fake's seeded RNG and broadcast to all watch subscribers.  Events
+    /// buffered while fuzzing was enabled are broadcast unshuffled if
+    /// fuzzing is disabled before the next [`advance`](Self::advance).
     ///
     /// Shuffling simulates out-of-order event delivery across multiple objects,
     /// exposing assumptions like "ADDED for obj-A always arrives before ADDED
     /// for obj-B".  A correct controller must converge regardless of event
-    /// ordering.  128 distinct seeds exercise 128 distinct permutations of the
-    /// same event set.
+    /// ordering.  The ordering depends on the seed.
     ///
     /// Disabled by default.  Enable before any [`create`](Self::create) calls
     /// whose events you want shuffled.
@@ -403,25 +406,19 @@ impl World {
         self.fake.set_fuzz_watch_events(enabled);
     }
 
-    /// Set the parking-detection policy to "forbidden" (the default).
+    /// Record the parking policy "forbidden" on the `World` (the initial
+    /// value set by [`WorldBuilder::build`]).
     ///
-    /// When forbidden, unexpected parking (all tasks waiting on non-timer
-    /// I/O) is treated as a test failure.  This prevents tests from hanging
-    /// silently on a misconfigured pipeline.
-    ///
-    /// Note: active detection is not yet wired; this flag is recorded but
-    /// currently has no effect.
+    /// Detection is not implemented: the flag is recorded but currently has
+    /// no effect.
     pub fn forbid_parking(&mut self) {
         self.forbid_parking = true;
     }
 
-    /// Permit the executor to park (sleep waiting for I/O or timers).
+    /// Record the parking policy "allowed" on the `World`.
     ///
-    /// Use this when a test intentionally involves real async I/O that may
-    /// legitimately block.
-    ///
-    /// Note: active detection is not yet wired; this flag is recorded but
-    /// currently has no effect.
+    /// Detection is not implemented: the flag is recorded but currently has
+    /// no effect.
     pub fn allow_parking(&mut self) {
         self.forbid_parking = false;
     }
@@ -457,8 +454,9 @@ impl World {
     /// [`ControllerContext`] extensions with caller-supplied values before
     /// spawning the controller loop.
     ///
-    /// The `kube::Client` is always inserted automatically on top of whatever
-    /// the caller provides, so there is no need to add it manually.
+    /// The `kube::Client` is always inserted automatically, replacing any
+    /// caller-supplied `kube::Client` (`Extensions::insert` replaces values of
+    /// the same type), so there is no need to add it manually.
     ///
     /// # Example
     ///
@@ -550,9 +548,13 @@ impl World {
     /// tests: insert the object, then call [`reconcile`](Self::reconcile) on
     /// the returned ref without needing a controller loop.
     ///
-    /// Unlike [`create`](Self::create), this does **not** trigger watch events
-    /// — it writes directly to the store. Use it when the test drives
-    /// reconciles explicitly rather than relying on the controller watcher.
+    /// Unlike [`create`](Self::create), this bypasses HTTP: there is no SSA
+    /// field-manager registration and no fault injection, but the store's
+    /// normal mutation path still emits an `ADDED`/`MODIFIED` watch event
+    /// (broadcast immediately, or buffered until the next
+    /// [`advance`](Self::advance) when watch fuzzing is enabled). Use it
+    /// when the test drives reconciles explicitly rather than relying on
+    /// the controller watcher.
     pub fn seed_obj<T: EnvResource>(&self, obj: T) -> ObjRef {
         let ns = obj
             .meta()
@@ -571,10 +573,9 @@ impl World {
     /// (finalizer management + status patching) against the fake API server
     /// and returns the resulting [`Action`].
     ///
-    /// Direct mode costs milliseconds per call, enabling property tests to
-    /// run O(1000–10000) cases in the same time a controller-loop test runs
-    /// O(10–100). Use it for Layer 2 property tests that exercise reconcile
-    /// logic correctness across generated inputs.
+    /// Direct mode avoids the controller loop and watcher, so property tests
+    /// can run many cases quickly. Use it for Layer 2 property tests that
+    /// exercise reconcile logic correctness across generated inputs.
     ///
     /// The listener is instantiated via `Default` so it must be stateless (or
     /// carry only configuration injected through the `ControllerContext`
@@ -614,8 +615,8 @@ impl World {
     /// Apply a single [`Op`] against the fake cluster, triggering watch events.
     ///
     /// `Create` uses `PatchParams::apply("kubo-test")` (SSA field manager).
-    /// `Delete` ignores 404 errors so that delete-before-create sequences do
-    /// not abort the test.
+    /// `Delete` ignores all errors (including 404) so that delete-before-create
+    /// sequences do not abort the test.
     pub async fn apply_op<T>(&self, op: Op<T>)
     where
         T: EnvResource,
@@ -714,8 +715,7 @@ impl WorldBuilder {
 
     /// Register a CRD descriptor with the discovery cache.
     ///
-    /// Currently a no-op.  Will be wired to the fake's discovery endpoint in
-    /// a future step.
+    /// Currently a no-op: the descriptor is discarded.
     pub fn install_crd<C>(self, _crd: C) -> Self {
         self
     }
