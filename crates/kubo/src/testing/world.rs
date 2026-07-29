@@ -1,14 +1,14 @@
 //! `kubo::testing` — simulation runtime and test utilities for kubo controllers.
 //!
 //! The centrepiece is [`World`]: a simulated Kubernetes cluster backed by
-//! [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer).  Each `World` owns a
+//! [`FakeApiServer`].  Each `World` owns a
 //! real [`kube::Client`] that speaks HTTP to the fake, so every reconcile
 //! pipeline the test drives runs the same production code paths it would in a
 //! pod.
 //!
 //! ## Driving controllers
 //!
-//! - [`WorldBuilder::listener`] — register a [`kubo::listener::Listener`] to
+//! - [`WorldBuilder::listener`] — register a [`Listener`] to
 //!   run as a background task inside the test's tokio runtime.
 //! - [`World::run_until_idle`] — yield until all spawned controller tasks have
 //!   settled (no more ready work with the current clock value).
@@ -21,7 +21,7 @@
 //!
 //! ## Asserting properties
 //!
-//! - [`properties`] — property assertion functions (`assert_converges`,
+//! - [`properties`](crate::testing::properties) — property assertion functions (`assert_converges`,
 //!   `assert_monotonic`, `assert_causal`, etc.) and helpers (`is_ready`,
 //!   `assert_no_leaks`) for checking temporal invariants over status tick
 //!   histories.
@@ -57,11 +57,14 @@ use crate::reconcile::ReconcileError;
 /// and [`World::is_deleted`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObjRef {
+    /// The object's namespace.
     pub namespace: String,
+    /// The object's name.
     pub name: String,
 }
 
 impl ObjRef {
+    /// Constructs a reference from a namespace and a name.
     pub fn new(namespace: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             namespace: namespace.into(),
@@ -92,6 +95,7 @@ type ListenerFn = Box<dyn FnOnce(kube::Client) -> tokio::task::AbortHandle + Sen
 /// `Listener<Self::Resource>` constraint to the sites that
 /// actually need it.
 pub trait ListenerResource {
+    /// The resource kind the listener reconciles.
     type Resource: EnvResource + HasConditions + Debug;
 }
 
@@ -439,7 +443,7 @@ impl World {
     ///
     /// Use [`seed_listener_with_extensions`](Self::seed_listener_with_extensions)
     /// when the listener's reconcile pipeline pulls values from
-    /// [`ctx.require`](kubo::extensions::Extensions::require) — e.g. an HTTP
+    /// [`ctx.require`](crate::extensions::Extensions::require) — e.g. an HTTP
     /// client or a token cache.
     pub fn seed_listener<R, L>(&self, listener: L)
     where
@@ -700,6 +704,7 @@ pub struct WorldBuilder {
 }
 
 impl WorldBuilder {
+    /// Creates an empty builder.
     pub fn new() -> Self {
         Self {
             listener_fns: Vec::new(),

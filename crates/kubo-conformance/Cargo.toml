@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [features]
 # Enable this feature when running against a real k3d cluster.
 # Gated behind a feature flag because it requires a live cluster. The crate

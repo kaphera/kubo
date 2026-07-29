@@ -24,7 +24,12 @@ pub enum Op<T> {
     ///
     /// If the object does not exist, the operation is silently ignored so that
     /// `Delete` operations before a matching `Create` do not abort the test.
-    Delete { namespace: String, name: String },
+    Delete {
+        /// Namespace of the object to delete.
+        namespace: String,
+        /// Name of the object to delete.
+        name: String,
+    },
 }
 
 // ── Strategies ────────────────────────────────────────────────────────────────

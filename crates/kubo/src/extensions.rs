@@ -1,3 +1,11 @@
+//! Type-keyed extension storage shared across the runtime.
+//!
+//! [`Extensions`] is a map keyed by value type, in the same pattern as
+//! `http::Extensions`. The [`Runtime`](crate::runtime::Runtime) owns one
+//! instance and shares it with every listener through
+//! [`ControllerContext`](crate::listener::ControllerContext) and
+//! [`RuntimeContext`](crate::runtime::RuntimeContext).
+
 use std::{
     any::{Any, TypeId, type_name},
     collections::HashMap,
@@ -5,7 +13,7 @@ use std::{
 
 /// A type-keyed map for operator-specific state.
 ///
-/// Unlike the pipeline [`State`] (which uses [`StateKey`](crate::state::StateKey)
+/// Unlike the pipeline [`State`](crate::state::State) (which uses [`StateKey`](crate::state::StateKey)
 /// marker types for step-to-step communication), `Extensions` keys directly
 /// by value type. Insert a `reqwest::Client` and retrieve it as
 /// `ctx.get::<reqwest::Client>()`.
@@ -17,6 +25,7 @@ pub struct Extensions {
 }
 
 impl Extensions {
+    /// Creates an empty extension map.
     pub fn new() -> Self {
         Self::default()
     }

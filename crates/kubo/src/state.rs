@@ -59,7 +59,9 @@ pub enum StateError {
     /// reached `Pass`/`Done`.
     #[error("state key '{key}' missing (expected value type {expected})")]
     Missing {
+        /// The type name of the [`StateKey`] that was never inserted.
         key: &'static str,
+        /// The type name of the value the key was expected to hold.
         expected: &'static str,
     },
 }

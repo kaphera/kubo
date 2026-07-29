@@ -64,10 +64,10 @@
 //!
 //! # Testability
 //!
-//! All Kubernetes interactions go through [`KubeHandle`](environment::KubeHandle),
+//! All Kubernetes interactions go through [`KubeHandle`],
 //! which wraps a `kube::Client`. In tests, construct a `KubeHandle` from the
-//! client provided by [`World`](testing::World) — which points at a
-//! [`FakeApiServer`](kubo_test_fakeapi::FakeApiServer) — and run the same
+//! client provided by `kubo::testing::World` — which points at a
+//! `kubo_test_fakeapi::FakeApiServer` — and run the same
 //! production code paths without a real cluster. Enable the `test-support`
 //! feature to access the `testing` module, the `World` simulation API, and
 //! the `#[kubo::test]` / `#[kubo::property_test]` macros.
@@ -189,12 +189,28 @@ pub enum ReconcilerError {
 /// }
 /// ```
 pub trait HasConditions {
+    /// Returns the resource's current status conditions.
+    ///
+    /// The canonical implementation reads `status.conditions` and falls back
+    /// to an empty vec when the status is unset.
+    /// [`Reconcile::new`](crate::reconcile::Reconcile::new) seeds the
+    /// pipeline's initial conditions from this.
     fn conditions(&self) -> Vec<Condition>;
 }
 
+/// Per-pass context handed to every pipeline step.
+///
+/// Constructed fresh for the apply pass and for the cleanup pass, and threaded
+/// into [`Gate::evaluate`](crate::gate::Gate::evaluate),
+/// [`Effect::apply`](crate::effect::Effect::apply),
+/// [`Effect::cleanup`](crate::effect::Effect::cleanup), and
+/// [`Poll::check`](crate::poll::Poll::check).
 pub struct ReconcileContext<'a, K> {
+    /// Namespace and name of the object being reconciled.
     pub object: &'a ObjectRef,
+    /// Generation-scoped factory for building status conditions.
     pub condition: &'a ConditionContext,
+    /// The custom resource being reconciled.
     pub cr: &'a K,
 }
 
@@ -202,17 +218,25 @@ impl<'a, K> ReconcileContext<'a, K>
 where
     K: EnvResource,
 {
+    /// Returns an [`ObjectRef`] for the reconciled resource: its namespace
+    /// (empty when unset) and its name.
     pub fn current(&self) -> ObjectRef {
         let namespace = self.cr.namespace().unwrap_or_default();
         let name = self.cr.name_any();
         ObjectRef { namespace, name }
     }
 
+    /// Returns an [`ObjectRef`] for a child object, using the supplied
+    /// namespace or falling back to the reconciled resource's namespace when
+    /// `None`. The name is used as given.
     pub fn ensure_default_namespace(&self, namespace: Option<String>, name: String) -> ObjectRef {
         let namespace = namespace.unwrap_or(self.current().namespace.clone());
         ObjectRef { namespace, name }
     }
 
+    /// Returns the controller [`OwnerReference`] for the reconciled resource,
+    /// for stamping onto child objects so Kubernetes garbage-collects them
+    /// with their parent.
     pub fn owner_reference(&self) -> Option<OwnerReference> {
         self.cr.controller_owner_ref(&())
     }

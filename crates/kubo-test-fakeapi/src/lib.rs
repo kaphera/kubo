@@ -2,7 +2,7 @@
 //!
 //! [`FakeApiServer`] is a [`tower::Service`] that implements a minimal slice
 //! of the Kubernetes HTTP API protocol against an in-memory [`Store`].  Pass
-//! it directly to [`kube::Client::new`] to get a fully real kube-rs client
+//! it directly to `kube::Client::new` to get a fully real kube-rs client
 //! that talks to the fake instead of a cluster.
 //!
 //! ## Supported operations
@@ -69,7 +69,10 @@ struct WatchEventRaw {
 /// Watch responses use `Watch` (a streaming channel-backed body that yields
 /// newline-delimited JSON watch events over time).
 pub enum ResponseBody {
+    /// A completed in-memory payload, used for regular (non-watch) responses.
     Full(Full<Bytes>),
+    /// A streaming body yielding newline-delimited JSON watch events, used
+    /// for watch responses.
     Watch(WatchBody),
 }
 
@@ -111,7 +114,10 @@ impl HttpBody for ResponseBody {
 /// `World::status_ticks` to assert on the status progression of a controller.
 #[derive(Clone, Debug)]
 pub struct StatusRecord {
+    /// Namespace of the object whose status was patched; empty for
+    /// cluster-scoped objects.
     pub namespace: String,
+    /// Name of the object whose status was patched.
     pub name: String,
     /// The raw `status` value extracted from the patch body.
     pub status: Value,
@@ -209,7 +215,7 @@ pub(crate) struct SsaConflict {
 /// All writes increment `resource_version` and inject it into
 /// `metadata.resourceVersion` so kube-rs can cache-bust correctly.
 ///
-/// Each write also broadcasts a [`WatchEventRaw`] to the per-GVK channel so
+/// Each write also broadcasts a `WatchEventRaw` to the per-GVK channel so
 /// any active watch streams see the mutation.
 pub struct Store {
     objects: HashMap<StoreKey, Value>,
@@ -781,7 +787,7 @@ impl FakeApiServer {
     /// Return `(namespace, name)` pairs for every object whose GVR matches
     /// `(group, version, resource)`, optionally restricted to `namespace`.
     ///
-    /// Used by [`World::list_refs`](kubo::testing::World::list_refs) to enumerate all
+    /// Used by `kubo::testing::World::list_refs` to enumerate all
     /// objects of a given type.
     pub fn list_refs(
         &self,
@@ -821,7 +827,7 @@ impl FakeApiServer {
     /// Enable or disable watch event fuzzing.
     ///
     /// When enabled, mutation events are held in a per-tick buffer rather than
-    /// broadcast immediately.  At the start of each [`World::advance`] step the
+    /// broadcast immediately.  At the start of each `kubo::testing::World::advance` step the
     /// buffer is shuffled using the seeded RNG, then broadcast to all watch
     /// subscribers.  This makes different event orderings across objects
     /// deterministically reproducible from a single seed.
@@ -834,7 +840,7 @@ impl FakeApiServer {
     /// Flush the pending watch-event buffer, broadcasting all queued events
     /// (shuffled when fuzzing is active) to their respective GVK channels.
     ///
-    /// Called automatically by [`World::advance`] at the start of each time
+    /// Called automatically by `kubo::testing::World::advance` at the start of each time
     /// step, after advancing the clock and before draining the task queue.
     pub fn flush_pending_watch_events(&self) {
         self.store.lock().unwrap().flush_pending_watch_events();
@@ -849,7 +855,7 @@ impl Default for FakeApiServer {
 
 // ── FaultBuilder ─────────────────────────────────────────────────────────────
 
-/// Builder returned by [`FakeApiServer::fault_builder`] and [`World::fault`].
+/// Builder returned by [`FakeApiServer::fault_builder`] and `kubo::testing::World::fault`.
 ///
 /// Call one of the trigger methods to register the fault rule into the fake
 /// server.  The rule is active immediately after the call.

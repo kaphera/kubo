@@ -35,16 +35,28 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
+/// The framework-owned status wrapper: the standard Kubernetes status fields
+/// plus the user's domain type `T` flattened alongside them. The [module
+/// documentation](crate::status) describes the pending-cleanup ledger
+/// semantics and the CRD-regeneration requirement.
 pub struct ResourceStatus<T: Default> {
+    /// Status conditions maintained by the framework; serialised only when
+    /// non-empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 
+    /// The `metadata.generation` this status was computed for, set at patch
+    /// time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
 
+    /// Framework-owned ledger of effect names that completed `apply` but whose
+    /// `cleanup` has not yet run. See the [module documentation](crate::status).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_cleanup: Vec<String>,
 
+    /// The user's domain status fields, flattened alongside the framework
+    /// fields.
     #[serde(flatten)]
     pub resource: T,
 }

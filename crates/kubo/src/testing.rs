@@ -6,7 +6,7 @@
 //! in tests, you construct one from `World::client()` and run the same
 //! production code paths through the fake.
 //!
-//! Property assertion functions live in [`properties`](self::properties).
+//! Property assertion functions live in [`properties`].
 //! Import them from there:
 //!
 //! ```ignore

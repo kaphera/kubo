@@ -1,3 +1,11 @@
+//! The operator runtime: leader election, signal handling, and controller
+//! lifecycle.
+//!
+//! [`Runtime`] collects listeners and runs them under a Coordination v1 Lease
+//! election with SIGTERM/SIGINT handling and drain timeouts.
+//! [`RuntimeConfig`] holds the lease tuning knobs, and [`RuntimeContext`] is
+//! the process-scoped context shared with all controllers.
+
 use std::{fmt::Debug, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Result;
@@ -288,14 +296,18 @@ pub struct RuntimeContext {
 }
 
 impl RuntimeContext {
+    /// Returns the operator name the [`Runtime`] was created with.
     pub fn name(&self) -> &'static str {
         self.name
     }
 
+    /// Borrows the shared [`KubeHandle`].
     pub fn ops(&self) -> &KubeHandle {
         &self.ops
     }
 
+    /// Clones the shared [`KubeHandle`] as an `Arc`, so each spawned
+    /// controller holds its own handle reference.
     pub fn ops_arc(&self) -> Arc<KubeHandle> {
         Arc::clone(&self.ops)
     }

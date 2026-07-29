@@ -1,3 +1,13 @@
+//! The reconcile-pass machinery: pipeline construction and execution.
+//!
+//! [`Reconcile`] is the builder and runner for a single reconcile pass. It
+//! manages the finalizer, routes to the apply pipeline or the reverse-order
+//! cleanup pipeline based on the object's deletion timestamp, patches status
+//! after each step, and handles rotation annotations and the steady-state
+//! requeue interval. [`ReadyReconcile`] is the terminal builder state with the
+//! status closure attached; [`ReconcileError`] wraps pipeline-step and
+//! finalizer failures.
+
 mod steps;
 
 use std::{sync::Arc, time::Duration};
@@ -39,9 +49,11 @@ const DEFAULT_STEADY_INTERVAL: Duration = Duration::from_secs(60);
 /// A reconciler error wrapper that includes finalizer-level failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcileError {
+    /// A pipeline step or a status patch failed.
     #[error("reconciler error: {0}")]
     Reconciler(#[from] ReconcilerError),
 
+    /// Adding or removing the finalizer failed.
     #[error("finalizer error: {0}")]
     Finalizer(#[from] EnvironmentError),
 }
@@ -50,11 +62,11 @@ pub enum ReconcileError {
 ///
 /// The reconciler owns the full lifecycle: it manages the finalizer
 /// string, routes to the apply pipeline or the reverse-order cleanup
-/// pipeline based on the object's deletion timestamp, and patches
-/// status after every step (only when changed).
+/// pipeline based on the object's deletion timestamp, and, during
+/// apply, patches status after every step (only when changed).
 ///
 /// All Kubernetes interactions go through [`KubeHandle`], which wraps a
-/// `kube::Client`. Swap the client for a [`kubo_test::World`]-backed one
+/// `kube::Client`. Swap the client for a `kubo::testing::World`-backed one
 /// to run the same pipeline against the fake API server in tests.
 ///
 /// ```ignore
@@ -162,7 +174,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
     ///
     /// The effect's pending-cleanup ledger entry is keyed by its Rust type
     /// name (`std::any::type_name::<F>()`) unless the effect overrides
-    /// [`Effect::effect_name`](crate::effect::Effect::effect_name) to pin a
+    /// [`Effect::effect_name`] to pin a
     /// stable, release-independent string. The type-name default is
     /// correct by construction for uniqueness within a pipeline, but
     /// **renaming the effect struct across a release orphans the old ledger
@@ -616,6 +628,11 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
     }
 }
 
+/// A fully-configured reconcile pipeline with its status builder attached.
+///
+/// Produced by [`Reconcile::status`]. Call [`ReadyReconcile::execute`] for the
+/// full finalizer-managed lifecycle, or [`ReadyReconcile::converge`] to run
+/// the pipeline without finalizer management.
 pub struct ReadyReconcile<'r, R: EnvResource + HasConditions, T>
 where
     T: Serialize + DeserializeOwned + Default + PartialEq + Clone,

@@ -210,6 +210,10 @@ where
 /// sub-steps have completed. It produces the value that gets published to
 /// the outer pipeline under the group's `StateKey`.
 pub trait Reducer<V>: Send + Sync {
+    /// Collapses the group's scoped state bag into the group's output value.
+    ///
+    /// Called after all sub-steps complete. Return `Err` when a required key
+    /// is absent from the state.
     fn reduce(&self, state: &State) -> Result<V, StateError>;
 }
 

@@ -5,7 +5,7 @@
 //! a condition and backoff strategy, and the framework requeues.
 //!
 //! Gates never mutate external state. They read from the Kubernetes API via
-//! [`KubeHandle`](crate::environment::KubeHandle) and make a pass/wait decision. This
+//! [`KubeHandle`] and make a pass/wait decision. This
 //! makes them inherently idempotent and safe to retry indefinitely.
 //!
 //! # Implementing a Gate
@@ -81,7 +81,10 @@ pub enum Outcome<T> {
     /// The dependency is not yet ready. The framework patches this condition
     /// onto the object's status and requeues after the backoff duration.
     Wait {
+        /// The not-ready condition patched onto the object's status while the
+        /// dependency is unsatisfied.
         condition: Condition,
+        /// The backoff strategy driving the requeue.
         backoff: Box<dyn Backoff>,
     },
 }

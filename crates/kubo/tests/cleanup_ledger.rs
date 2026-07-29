@@ -8,6 +8,8 @@
 //! framework's source of truth for "applied, teardown outstanding". See
 //! [`kubo::status::ResourceStatus`] for the full rationale.
 
+#![allow(missing_docs)]
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},

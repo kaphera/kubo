@@ -26,6 +26,12 @@ use crate::{
 
 // ── DummyResource ─────────────────────────────────────────────────────────────
 
+/// The spec of the `CustomResource`-derived [`DummyResource`] (group
+/// `test.kubo.dev`, version `v1alpha1`, namespaced, status [`DummyStatus`]).
+///
+/// A test fixture constructed by [`dummy`] / [`dummy_from_spec`] and the
+/// [`any_dummy_spec`](crate::testing::strategies::any_dummy_spec) proptest
+/// strategy.
 #[derive(CustomResource, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "test.kubo.dev",
@@ -35,15 +41,20 @@ use crate::{
     namespaced
 )]
 pub struct DummySpec {
+    /// The spec payload.
     pub field: String,
 }
 
+/// The status of [`DummyResource`], written by [`DummyListener`] and
+/// [`BackoffDummyListener`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DummyStatus {
+    /// Set to `true` by the dummy listeners on every reconcile pass.
     pub ready: bool,
+    /// Status conditions; skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
-    /// Set to `Some("reconciled")` on the first successful reconcile.
+    /// Set to `Some("reconciled")` on every reconcile pass.
     ///
     /// Useful for monotonicity assertions: once set, it must not regress
     /// to `None`, even when the controller retries after a fault.

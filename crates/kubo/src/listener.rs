@@ -1,3 +1,11 @@
+//! Declarative controller definitions.
+//!
+//! The [`Listener`] trait describes one controller — which resource it watches
+//! and how to reconcile it — and [`ControllerContext`] is the
+//! per-leadership-term context handed to its methods. The
+//! [`Runtime`](crate::runtime::Runtime) type-erases the resource type at
+//! registration.
+
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -28,6 +36,7 @@ pub struct ControllerContext {
 }
 
 impl ControllerContext {
+    /// Constructs a context from the operations handle and the extensions map.
     pub fn new(ops: Arc<KubeHandle>, extensions: Arc<Extensions>) -> Self {
         Self { ops, extensions }
     }
@@ -65,7 +74,7 @@ where
     /// The domain-specific status type for this resource.
     ///
     /// The framework wraps this in `ResourceStatus<Status>` automatically,
-    /// adding `conditions` and `observedGeneration`.
+    /// adding `conditions`, `observedGeneration`, and `pendingCleanup`.
     type Status: Serialize + DeserializeOwned + Default + PartialEq + Clone + Send + Sync;
 
     /// Human-readable name for logging and leader election diagnostics.

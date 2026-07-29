@@ -27,8 +27,11 @@ pub fn now() -> Time {
 /// The three valid values for a Kubernetes condition's `status` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConditionStatus {
+    /// The condition is satisfied.
     True,
+    /// The condition is not satisfied.
     False,
+    /// The condition's state could not be determined.
     Unknown,
 }
 

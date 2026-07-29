@@ -7,6 +7,12 @@ members = [
     "crates/kubo-test-macros",
 ]
 
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

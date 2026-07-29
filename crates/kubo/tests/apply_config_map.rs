@@ -42,6 +42,8 @@
 //! across an effect rename, and keep the pinned name unique within the
 //! pipeline.
 
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;

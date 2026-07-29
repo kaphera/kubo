@@ -81,7 +81,10 @@ pub enum EffectOutcome<T> {
     /// giving it access to `last_transition_time` for duration-based
     /// escalation.
     Retry {
+        /// The condition patched onto the object's status for this retry.
         condition: Condition,
+        /// The backoff strategy driving the requeue; receives the previous
+        /// condition via [`BackoffContext`](crate::backoff::BackoffContext).
         backoff: Box<dyn Backoff>,
     },
 }
@@ -108,6 +111,11 @@ pub enum EffectOutcome<T> {
 /// `Cleanup` event).
 #[async_trait]
 pub trait Effect<K: Send + Sync = ()>: StateKey {
+    /// The error type returned by [`apply`](Self::apply) and
+    /// [`cleanup`](Self::cleanup).
+    ///
+    /// Pipeline registration requires `Into<ReconcilerError>`, so failures
+    /// propagate uniformly regardless of the concrete type.
     type Error;
 
     /// Apply this effect — create or update external state.

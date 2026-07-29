@@ -151,7 +151,7 @@ fn derived_open_api_v3_schema() -> Value {
 /// replaces.  Declaring the framework fields AND preserving the unknown ones is
 /// exactly the shape a real operator CRD takes.
 ///
-/// Used by [`install_conformance_crd`] and as the restore schema the
+/// Used by `install_conformance_crd` and as the restore schema the
 /// structural-pruning and ledger-progression scenarios reinstall at the end of
 /// a run so a later scenario in the same cluster is not poisoned by a tightened
 /// status schema.
@@ -184,8 +184,16 @@ pub fn default_open_api_v3_schema() -> Value {
 /// manual update.
 #[derive(Clone, Debug)]
 pub struct DerivedStatusField {
+    /// The status field's name as declared in the conformance CRD schema
+    /// (e.g. `conditions`, `pendingCleanup`).
     pub name: String,
+    /// The field's top-level OpenAPI type keyword (`"array"`, `"integer"`,
+    /// …). The declaring schema emits a minimal `{ "type": <type_keyword> }`
+    /// per field — enough to stop apiserver pruning while accepting the
+    /// representative value.
     pub type_keyword: String,
+    /// A minimal value valid under the minimal type declaration, written by
+    /// the structural-pruning scenario via [`Scenario::apply_status`].
     pub representative_value: Value,
 }
 
@@ -263,9 +271,9 @@ pub struct TraceEntry {
     /// and differs between fake and real — but it is the handle a later step
     /// uses to send a `resourceVersion` precondition (the optimistic-concurrency
     /// pattern: GET to observe the rv, then patch with it).  See
-    /// [`StepKind::ApplyStatusPrecondition`].
+    /// `StepKind::ApplyStatusPrecondition`.
     pub resource_version: Option<String>,
-    /// The error class of a reconcile failure, for the [`StepKind::RunReconcile`]
+    /// The error class of a reconcile failure, for the `StepKind::RunReconcile`
     /// `Err` arm.  `None` for every wire-level step and for a successful
     /// reconcile pass; `Some("conflict")` when the underlying error is a
     /// `kube::Error::Api` with HTTP 409 (the apiserver rejected an SSA patch on
@@ -279,7 +287,7 @@ pub struct TraceEntry {
     /// 409s is caught as a divergence rather than a panic.
     pub error: Option<String>,
     /// The name the scenario assigned to this step, if any.  Set from
-    /// [`Step::name`] when the entry is recorded.  Not compared by
+    /// `Step::name` when the entry is recorded.  Not compared by
     /// [`assert_equivalent`] — both arms run the same scenario, so the names
     /// are identical by construction; the field exists so a test can look an
     /// entry up by name with [`Trace::entry`] / [`Trace::entry_opt`] instead of
@@ -409,7 +417,7 @@ const SERVER_ASSIGNED_METADATA: &[&str] = &[
 /// in place.
 ///
 /// Removes the noisy `metadata` fields listed in
-/// [`SERVER_ASSIGNED_METADATA`].  What remains — `spec`, framework-owned
+/// `SERVER_ASSIGNED_METADATA`.  What remains — `spec`, framework-owned
 /// `status`, and the stable parts of `metadata` (name, namespace, labels,
 /// annotations, finalizers) — is the surface the framework reads and writes,
 /// and is where fake/real equivalence must hold.
@@ -780,7 +788,7 @@ enum StepKind {
     },
 }
 
-/// The pipeline builder a [`StepKind::RunReconcile`] step runs each pass.
+/// The pipeline builder a `StepKind::RunReconcile` step runs each pass.
 ///
 /// Higher-rank-bounded so the closure can hand the harness a `Reconcile` that
 /// borrows the `KubeHandle` for exactly the duration of the pass, while the
@@ -802,10 +810,10 @@ pub type RunReconcilePipeline = Box<
 /// to execute against the in-process fake server.
 ///
 /// Every scenario operates on its own conformance object, named after the
-/// scenario (see [`Scenario::object_name`]).  The object lives at
+/// scenario (see `Scenario::object_name`).  The object lives at
 /// `/apis/conformance.kubo.dev/v1/namespaces/default/conformanceobjects/<name>`
 /// and is created by the scenario's first apply and destroyed (on the real
-/// arm) by [`reset_conformance_object`] before the scenario runs.  Per-scenario
+/// arm) by `reset_conformance_object` before the scenario runs.  Per-scenario
 /// objects are what unlocks real-side parallelism and multi-object scenarios;
 /// the one shared resource that remains is the CRD itself, which `ReinstallCrd`
 /// steps delete wholesale — see that step's docs for the serialisation caveat.
@@ -974,7 +982,9 @@ impl Scenario {
     /// object), this observes a non-parent resource — a child resource an effect
     /// applied, a sibling object, etc.  It is the observation primitive for
     /// multi-object scenarios: the `RunReconcile` effects apply and delete
-    /// child resources through [`KubeHandle::apply`] / [`KubeHandle::delete`],
+    /// child resources through
+    /// [`kubo::environment::KubeHandle::apply`] /
+    /// [`kubo::environment::KubeHandle::delete`],
     /// and this step independently observes the child's lifecycle on both
     /// backends so the equivalence assertion is on the observable surface, not
     /// just on "the framework returned `Ok`".  The path is sent verbatim; the
@@ -1026,7 +1036,7 @@ impl Scenario {
     /// so the equivalence assertion rides on the normalised items content rather
     /// than on the full collection (which would be polluted by parallel
     /// scenarios on the real arm).  The fake models only the `key=value`
-    /// equality form (comma-separated terms ANDed); see [`StepKind::List`].
+    /// equality form (comma-separated terms ANDed); see `StepKind::List`.
     pub fn list_labeled(
         mut self,
         path: impl Into<String>,
@@ -1080,7 +1090,7 @@ impl Scenario {
 
     /// Append a CRD reinstall with the given `openAPIV3Schema`.
     ///
-    /// Real-cluster-only control step (see [`StepKind::ReinstallCrd`]): swaps
+    /// Real-cluster-only control step (see `StepKind::ReinstallCrd`): swaps
     /// the `ConformanceObject` CRD's schema mid-scenario.  On the fake path this
     /// is a no-op (the fake has no schema).  The `open_api_v3_schema` is the
     /// full value of `spec.versions[0].schema.openAPIV3Schema` — the caller owns
@@ -1110,7 +1120,7 @@ impl Scenario {
     /// harness reuses it for every `RunReconcile` step in the scenario, so any
     /// per-run mutable state it carries (e.g. a retry counter) must be reset
     /// between [`run_against_fake`](Scenario::run_against_fake) and
-    /// [`run_against_kube_apiserver`](Scenario::run_against_kube_apiserver) by the
+    /// `Scenario::run_against_kube_apiserver` by the
     /// caller.
     pub fn run_reconcile<F>(mut self, field_manager: &str, finalizer: &str, pipeline: F) -> Self
     where
@@ -1169,7 +1179,8 @@ impl Scenario {
     /// Positional indices (`trace.entries[N]`) shift whenever a step is inserted
     /// or removed earlier in the scenario, and a mis-indexed assertion is a
     /// false proof — the worst failure mode a conformance test can have. Named
-    /// lookups survive reordering. Like [`expect_last_status`] / [`capture_rv`],
+    /// lookups survive reordering. Like [`Scenario::expect_last_status`] /
+    /// [`Scenario::capture_rv`],
     /// this operates on the last pushed step, so it chains after a builder:
     /// `.apply(...).named("seed")`. Names are not required to be unique, but a
     /// lookup that matches more than one entry returns the first; prefer unique
@@ -1212,7 +1223,7 @@ impl Scenario {
     /// Panics if the cluster is unreachable or if CRD installation fails with
     /// an error other than 409 Conflict.  Also panics before any mutation if the
     /// cluster has not been explicitly opted in via `KUBO_CONFORMANCE_CLUSTER`
-    /// (see [`verify_cluster_identity`]).
+    /// (see `verify_cluster_identity`).
     #[cfg(feature = "k3d")]
     pub fn run_against_kube_apiserver(&self) -> Trace {
         // Each scenario operates on its own object (named after the scenario),

@@ -42,7 +42,7 @@ use super::{ClusterEnvResource, EnvResource, EnvironmentError, ObjectRef};
 /// status by contract, so force would be dead code in the steady state and a
 /// footgun the moment it actually fired.  This is the only type your gates,
 /// effects, and polls ever see — there is no trait to mock out; swap the client
-/// for one backed by [`kubo_test::World`] to run against the fake API server
+/// for one backed by `kubo::testing::World` to run against the fake API server
 /// instead.
 #[derive(Clone)]
 pub struct KubeHandle {

@@ -4,8 +4,8 @@
 //! effect, and poll receives `&KubeHandle` and uses its inherent methods to read
 //! or mutate cluster state.  In production you construct one from a real
 //! `kube::Client`; in tests you construct one from the client provided by
-//! [`World`](crate::testing::World), which points at a [`FakeApiServer`] — no
-//! cluster needed.
+//! `kubo::testing::World`, which points at a `kubo_test_fakeapi::FakeApiServer`
+//! — no cluster needed.
 //!
 //! [`EnvResource`] and [`ClusterEnvResource`] are bound-collection aliases
 //! for the constraints every typed Kubernetes resource must satisfy.  They are
@@ -102,11 +102,14 @@ impl<T> ClusterEnvResource for T where
 /// namespaced resource without carrying the full object.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObjectRef {
+    /// The object's namespace.
     pub namespace: String,
+    /// The object's name.
     pub name: String,
 }
 
 impl ObjectRef {
+    /// Constructs a reference from a namespace and a name.
     pub fn new(namespace: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             namespace: namespace.into(),

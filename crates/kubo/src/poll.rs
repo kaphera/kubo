@@ -53,7 +53,10 @@ pub enum PollState {
     /// The resource exists but has not converged yet. The framework patches
     /// the condition and requeues with the provided backoff.
     Pending {
+        /// The condition patched onto the status while the resource has not
+        /// converged.
         condition: Condition,
+        /// The backoff strategy driving the requeue.
         backoff: Box<dyn Backoff>,
     },
 
@@ -62,7 +65,9 @@ pub enum PollState {
     /// but distinguished so that conditions can carry different reasons and
     /// operators can alert on `Failed` vs `Pending` in monitoring.
     Failed {
+        /// The condition patched onto the status for the failed state.
         condition: Condition,
+        /// The backoff strategy driving the requeue.
         backoff: Box<dyn Backoff>,
     },
 }

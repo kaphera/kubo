@@ -46,9 +46,14 @@ pub type PropertyResult = Result<(), PropertyViolation>;
 /// Describes a property violation with enough context to debug.
 #[derive(Debug, Clone)]
 pub struct PropertyViolation {
+    /// The name of the violated property (e.g. `"monotonic"`, `"causal"`).
     pub property: &'static str,
+    /// The caller-supplied label describing what was checked.
     pub label: String,
+    /// The index in the tick sequence where the violation occurred, when a
+    /// single offending tick applies.
     pub tick_index: Option<usize>,
+    /// The description of the violation.
     pub detail: String,
 }
 

@@ -1,3 +1,14 @@
+//! Attribute macros for kubo controller tests.
+//!
+//! This crate exports [`test`] and [`property_test`], re-exported by the
+//! `kubo` crate (behind its `test-support` feature) as `kubo::test` and
+//! `kubo::property_test`. [`test`] wraps the annotated async function in
+//! `#[tokio::test(start_paused = true)]` and constructs a
+//! `kubo::testing::World` for each `&mut World` parameter, printing the
+//! replay seed to stderr on failure. [`property_test`] additionally draws
+//! parameters from proptest strategies. See the item documentation for
+//! attribute options and seed handling.
+
 use proc_macro::TokenStream;
 use proc_macro2::{Literal, Span};
 use quote::quote;
@@ -6,7 +17,7 @@ use syn::{FnArg, ItemFn, LitInt, Token, Type, parse::Parse, parse_macro_input};
 /// Test attribute macro for kubo controller tests.
 ///
 /// Wraps the annotated async function in `#[tokio::test(start_paused = true)]`
-/// and constructs a [`kubo::testing::World`] for each `&mut World` parameter.
+/// and constructs a `kubo::testing::World` for each `&mut World` parameter.
 /// On test failure the seed is printed to stderr so it can be replayed:
 ///
 /// ```text
@@ -319,7 +330,7 @@ fn is_world_ref_mut(ty: &Type) -> bool {
 ///
 /// # Parameters
 ///
-/// - `&mut World` parameters are constructed from [`kubo::testing::World::builder`]
+/// - `&mut World` parameters are constructed from `kubo::testing::World::builder`
 ///   and injected at the start of each case.
 /// - Parameters annotated with `#[strategy(expr)]` are drawn from `expr` via
 ///   proptest's strategy API.  The expression is evaluated once and used for

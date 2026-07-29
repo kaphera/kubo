@@ -10,6 +10,8 @@
 //! exercises the same production code paths the controller would use in a
 //! cluster, including SSA patches, finalizer management, and status updates.
 
+#![allow(missing_docs)]
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
