@@ -131,41 +131,6 @@ where
     }
 }
 
-// ─── GuardStep ───────────────────────────────────────────────────────
-
-/// A gate used purely as a guard; its output is not stored.
-pub(super) struct GuardStep<G> {
-    gate: G,
-}
-
-impl<G> GuardStep<G> {
-    pub fn new(gate: G) -> Self {
-        Self { gate }
-    }
-}
-
-#[async_trait]
-impl<G, K> ApplyStep<K> for GuardStep<G>
-where
-    K: Send + Sync,
-    G: Gate<K> + Send + Sync,
-    G::Error: Into<ReconcilerError>,
-    <G as StateKey>::Value: Send + Sync,
-{
-    async fn run_apply<'a>(
-        &'a self,
-        cx: &'a ReconcileContext<K>,
-        handle: &'a KubeHandle,
-        _state: &mut State,
-    ) -> StepProgress {
-        match self.gate.evaluate(cx, handle).await {
-            Ok(Outcome::Pass(_)) => StepProgress::Continue,
-            Ok(Outcome::Wait { condition, backoff }) => StepProgress::Wait { condition, backoff },
-            Err(e) => StepProgress::Error(e.into()),
-        }
-    }
-}
-
 // ─── EffectStep ──────────────────────────────────────────────────────
 
 pub(super) struct EffectStep<F> {

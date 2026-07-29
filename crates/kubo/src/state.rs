@@ -6,9 +6,7 @@
 //! or [`Reconcile::effect`](crate::reconcile::Reconcile::effect) declares a
 //! [`StateKey`] with an associated `Value` type; the framework inserts the
 //! value after a successful step, and downstream steps retrieve it by key
-//! type. Guards registered with
-//! [`Reconcile::guard`](crate::reconcile::Reconcile::guard) store nothing,
-//! and [`Reconcile::gate_as`](crate::reconcile::Reconcile::gate_as) stores
+//! type. [`Reconcile::gate_as`](crate::reconcile::Reconcile::gate_as) stores
 //! the value under a separate marker key rather than the gate's own type.
 //!
 //! This design gives you compile-time type safety on the values flowing through

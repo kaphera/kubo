@@ -10,9 +10,7 @@
 //!
 //! Use a gate when you need to block the pipeline on an upstream resource that
 //! another controller manages; use a [`Poll`](crate::poll) when you need to
-//! wait for something your own effects created to converge. When the gate's
-//! output is not needed downstream, use
-//! [`Reconcile::guard`](crate::reconcile::Reconcile::guard) instead.
+//! wait for something your own effects created to converge.
 //!
 //! # Implementing a Gate
 //!

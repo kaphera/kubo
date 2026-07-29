@@ -26,12 +26,11 @@
 //!   reconcile pass; [`ReadyReconcile::execute`](crate::reconcile::ReadyReconcile::execute)
 //!   runs it with finalizer management.
 //!
-//! A pipeline is a sequence of steps of four kinds:
+//! A pipeline is a sequence of steps of three kinds:
 //!
 //! | Step | Registered via | Behaviour |
 //! |------|----------------|-----------|
 //! | Gate | [`Gate`](crate::gate::Gate) | read-only dependency check; passes a value or waits |
-//! | Guard | [`Reconcile::guard`](crate::reconcile::Reconcile::guard) | a gate whose output is discarded |
 //! | Effect | [`Effect`](crate::effect::Effect) | write step; owns its cleanup |
 //! | Poll | [`Poll`](crate::poll::Poll) | read-only convergence check, typically placed after effects |
 //!

@@ -64,8 +64,7 @@ use crate::{
     group::Group,
     poll::Poll,
     reconcile::steps::{
-        ApplyStep, CleanableStep, CleanupProgress, EffectStep, GateAsStep, GateStep, GuardStep,
-        PollStep,
+        ApplyStep, CleanableStep, CleanupProgress, EffectStep, GateAsStep, GateStep, PollStep,
     },
     state::{RotationRequested, State, StateKey},
     status::ResourceStatus,
@@ -190,20 +189,6 @@ impl<'r, R: NamespaceResource + HasConditions> Reconcile<'r, R> {
     {
         self.apply_steps
             .push(Box::new(GateAsStep::<G, K>::new(gate)));
-        self
-    }
-
-    /// Add a guard — a gate whose output is evaluated but discarded.
-    ///
-    /// Use this for checks that must pass before the pipeline continues
-    /// but whose output is not needed downstream.
-    pub fn guard<G>(mut self, gate: G) -> Self
-    where
-        G: Gate<R> + Send + Sync + 'r,
-        G::Error: Into<ReconcilerError>,
-        <G as StateKey>::Value: Send + Sync,
-    {
-        self.apply_steps.push(Box::new(GuardStep::new(gate)));
         self
     }
 

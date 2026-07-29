@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/kaphera/kubo/actions/workflows/ci.yml/badge.svg)](https://github.com/kaphera/kubo/actions/workflows/ci.yml)
 
-kubo is a framework for building Kubernetes operators in Rust on top of kube: client machinery, CRD types, and watches remain kube's, while kubo takes over the reconcile pipeline — gates, effects, polls, and guards — with finalizer lifecycle, status patching, backoff, and reverse-order cleanup.
+kubo is a framework for building Kubernetes operators in Rust on top of kube: client machinery, CRD types, and watches remain kube's, while kubo takes over the reconcile pipeline — gates, effects, and polls — with finalizer lifecycle, status patching, backoff, and reverse-order cleanup.
 
 ## Documentation
 
