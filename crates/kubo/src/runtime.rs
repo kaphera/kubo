@@ -19,9 +19,9 @@ use tracing::{error, info, warn};
 
 use crate::{
     HasConditions,
-    environment::{EnvResource, KubeHandle},
+    environment::{KubeHandle, NamespaceResource},
     extensions::Extensions,
-    listener::{ControllerContext, Listener},
+    listener::{Listener, ListenerContext},
     reconcile::{Reconcile, ReconcileError},
     runtime::lease::LeaseLock,
 };
@@ -121,7 +121,7 @@ impl RuntimeConfig {
 pub struct Runtime {
     name: &'static str,
     client: kube::Client,
-    ops: KubeHandle,
+    handle: KubeHandle,
     extensions: Extensions,
     controllers: Vec<(&'static str, ControllerFn)>,
 }
@@ -137,14 +137,14 @@ impl Runtime {
     /// SSA field manager, so all controllers in this runtime share one
     /// field-manager identity.
     pub fn new(name: &'static str, client: kube::Client) -> Self {
-        let ops = KubeHandle::new(client.clone(), name);
+        let handle = KubeHandle::new(client.clone(), name);
         let mut extensions = Extensions::new();
         extensions.insert(client.clone());
 
         Self {
             name,
             client,
-            ops,
+            handle,
             extensions,
             controllers: Vec::new(),
         }
@@ -164,7 +164,7 @@ impl Runtime {
     /// the typed controller loop.
     pub fn listener<R, L>(mut self, listener: L) -> Self
     where
-        R: EnvResource + HasConditions + Debug + 'static,
+        R: NamespaceResource + HasConditions + Debug + 'static,
         L: Listener<R> + 'static,
     {
         let listener = Arc::new(listener);
@@ -172,12 +172,12 @@ impl Runtime {
 
         let factory: ControllerFn = Box::new(move |rt_ctx, cancel| {
             let listener = Arc::clone(&listener);
-            let ops = rt_ctx.ops_arc();
+            let ops = rt_ctx.handle_arc();
             let extensions = rt_ctx.extensions_arc();
             let client = client.clone();
 
             Box::pin(async move {
-                let ctrl_ctx = Arc::new(ControllerContext::new(ops, extensions));
+                let ctrl_ctx = Arc::new(ListenerContext::new(ops, extensions));
                 let controller = {
                     use kube::runtime::watcher::Config as WatcherConfig;
 
@@ -194,10 +194,10 @@ impl Runtime {
                     .run(
                         {
                             let listener = Arc::clone(&listener);
-                            move |obj: Arc<R>, ctx: Arc<ControllerContext>| {
+                            move |obj: Arc<R>, ctx: Arc<ListenerContext>| {
                                 let listener = Arc::clone(&listener);
                                 async move {
-                                    let reconciler = Reconcile::new(ctx.ops(), obj.clone());
+                                    let reconciler = Reconcile::new(ctx.handle(), obj.clone());
                                     listener
                                         .reconcile(&ctx, obj, reconciler)
                                         .execute(L::FINALIZER)
@@ -205,7 +205,7 @@ impl Runtime {
                                 }
                             }
                         },
-                        |_obj: Arc<R>, _err: &ReconcileError, _ctx: Arc<ControllerContext>| {
+                        |_obj: Arc<R>, _err: &ReconcileError, _ctx: Arc<ListenerContext>| {
                             Action::requeue(std::time::Duration::from_secs(5))
                         },
                         ctrl_ctx,
@@ -257,7 +257,7 @@ impl Runtime {
 
         let rt_ctx = Arc::new(RuntimeContext {
             name: self.name,
-            ops: Arc::new(self.ops),
+            handle: Arc::new(self.handle),
             extensions: Arc::new(self.extensions),
         });
 
@@ -291,7 +291,7 @@ impl Runtime {
 /// [`KubeHandle`] handle plus an extensions map for operator-specific state.
 pub struct RuntimeContext {
     name: &'static str,
-    ops: Arc<KubeHandle>,
+    handle: Arc<KubeHandle>,
     extensions: Arc<Extensions>,
 }
 
@@ -302,14 +302,14 @@ impl RuntimeContext {
     }
 
     /// Borrows the shared [`KubeHandle`].
-    pub fn ops(&self) -> &KubeHandle {
-        &self.ops
+    pub fn handle(&self) -> &KubeHandle {
+        &self.handle
     }
 
     /// Clones the shared [`KubeHandle`] as an `Arc`, so each spawned
     /// controller holds its own handle reference.
-    pub fn ops_arc(&self) -> Arc<KubeHandle> {
-        Arc::clone(&self.ops)
+    pub fn handle_arc(&self) -> Arc<KubeHandle> {
+        Arc::clone(&self.handle)
     }
 
     /// Access the extensions type-map.

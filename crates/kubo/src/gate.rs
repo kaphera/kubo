@@ -31,8 +31,8 @@
 //! impl Gate<Database> for ResolveDatabase {
 //!     type Error = MyError;
 //!
-//!     async fn evaluate(&self, cx: &ReconcileContext<Database>, ops: &KubeHandle) -> Result<Outcome<String>, Self::Error> {
-//!         let db = ops.get::<Database>(&ObjectRef::new(&self.namespace, &self.name)).await?;
+//!     async fn evaluate(&self, cx: &ReconcileContext<Database>, handle: &KubeHandle) -> Result<Outcome<String>, Self::Error> {
+//!         let db = handle.get::<Database>(&ObjectRef::new(&self.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if is_ready(&db) => Ok(Outcome::Pass(db.status.url.unwrap())),
 //!             _ => Ok(Outcome::Wait {
@@ -74,7 +74,7 @@ pub trait Gate<K: Send + Sync = ()>: StateKey {
     async fn evaluate(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<Outcome<<Self as StateKey>::Value>, Self::Error>;
 }
 

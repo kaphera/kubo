@@ -1,7 +1,7 @@
 //! Declarative controller definitions.
 //!
 //! The [`Listener`] trait describes one controller — which resource it watches
-//! and how to reconcile it — and [`ControllerContext`] is the
+//! and how to reconcile it — and [`ListenerContext`] is the
 //! per-leadership-term context handed to its methods. The
 //! [`Runtime`](crate::runtime::Runtime) type-erases the resource type at
 //! registration.
@@ -16,7 +16,7 @@ use crate::extensions::Extensions;
 use crate::reconcile::Reconcile;
 use crate::{
     HasConditions,
-    environment::{EnvResource, KubeHandle},
+    environment::{KubeHandle, NamespaceResource},
     reconcile::ReadyReconcile,
 };
 
@@ -24,26 +24,26 @@ use crate::{
 ///
 /// This type IS the kube-rs reconcile context — it goes into `Arc` and gets
 /// passed as the third argument to `Controller::run()`. Inside the reconcile
-/// closure, kube-rs hands back `Arc<ControllerContext>`, giving direct
+/// closure, kube-rs hands back `Arc<ListenerContext>`, giving direct
 /// access to the operations handle and extensions.
 ///
 /// Listeners use this in both `controller()` (to get the kube client for
 /// building watchers) and `reconcile()` (to grab operator-specific state
 /// for constructing effects).
-pub struct ControllerContext {
-    ops: Arc<KubeHandle>,
+pub struct ListenerContext {
+    handle: Arc<KubeHandle>,
     extensions: Arc<Extensions>,
 }
 
-impl ControllerContext {
+impl ListenerContext {
     /// Constructs a context from the operations handle and the extensions map.
-    pub fn new(ops: Arc<KubeHandle>, extensions: Arc<Extensions>) -> Self {
-        Self { ops, extensions }
+    pub fn new(handle: Arc<KubeHandle>, extensions: Arc<Extensions>) -> Self {
+        Self { handle, extensions }
     }
 
     /// Borrow the operations handle for building `Reconcile` pipelines.
-    pub fn ops(&self) -> &KubeHandle {
-        &self.ops
+    pub fn handle(&self) -> &KubeHandle {
+        &self.handle
     }
 
     /// Access the extensions type-map.
@@ -65,11 +65,11 @@ impl ControllerContext {
 ///
 /// The trait separates watch setup (`controller`) from reconcile logic
 /// (`reconcile`) so the Runtime can compose shutdown and error policies
-/// uniformly — but crucially, both methods receive the `ControllerContext`
+/// uniformly — but crucially, both methods receive the `ListenerContext`
 /// which interoperates directly with kube-rs's controller loop.
 pub trait Listener<R>: Send + Sync
 where
-    R: EnvResource + HasConditions + Debug,
+    R: NamespaceResource + HasConditions + Debug,
 {
     /// The domain-specific status type for this resource.
     ///
@@ -88,7 +88,7 @@ where
 
     /// Return the kube-rs Controller watcher for this resource kind.
     ///
-    /// Receives the `ControllerContext` so you can pull the kube client
+    /// Receives the `ListenerContext` so you can pull the kube client
     /// from extensions via `ctx.require::<kube::Client>()` (or anything
     /// else from extensions) for building the `Api` handles
     /// `Controller::owns` and `Controller::watches` take.
@@ -103,14 +103,14 @@ where
     /// the objects of this kind that need reconciling. The default
     /// implementation returns `ctrl` undecorated, so the controller watches
     /// only its own kind.
-    fn controller(&self, ctx: &ControllerContext, ctrl: Controller<R>) -> Controller<R> {
+    fn controller(&self, ctx: &ListenerContext, ctrl: Controller<R>) -> Controller<R> {
         let _ = ctx;
         ctrl
     }
 
     /// Build the reconcile pipeline for a single object.
     ///
-    /// Called on every reconcile event. Receives the full `ControllerContext`
+    /// Called on every reconcile event. Receives the full `ListenerContext`
     /// so you can pull operator-specific state (HTTP clients, caches, etc.)
     /// for constructing effects. The object comes from kube-rs's watcher.
     ///
@@ -118,7 +118,7 @@ where
     /// (via `.status()`). The Runtime calls `.execute(FINALIZER)` on it.
     ///
     /// ```rust,ignore (illustrative fragment: elided return type and bodies)
-    /// fn reconcile<'a>(&self, ctx: &'a ControllerContext, obj: Arc<R>, rec: Reconcile<'a, R>) -> ... {
+    /// fn reconcile<'a>(&self, ctx: &'a ListenerContext, obj: Arc<R>, rec: Reconcile<'a, R>) -> ... {
     ///     rec.effect(CreateDatabase { .. })
     ///        .poll(WaitForReady { .. })
     ///        .status(|state, _prev| MyStatus {
@@ -128,7 +128,7 @@ where
     /// ```
     fn reconcile<'a>(
         &'a self,
-        ctx: &'a ControllerContext,
+        ctx: &'a ListenerContext,
         obj: Arc<R>,
         rec: Reconcile<'a, R>,
     ) -> ReadyReconcile<'a, R, Self::Status>;

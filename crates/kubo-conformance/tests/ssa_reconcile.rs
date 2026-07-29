@@ -89,7 +89,7 @@ impl Effect<ConformanceObject> for EffectA {
     async fn apply(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &kubo::state::State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         Ok(EffectOutcome::Done(()))
@@ -98,7 +98,7 @@ impl Effect<ConformanceObject> for EffectA {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         let n = self.attempts.fetch_add(1, Ordering::Relaxed);
         if n == 0 {
@@ -137,7 +137,7 @@ impl Effect<ConformanceObject> for EffectB {
     async fn apply(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &kubo::state::State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         Ok(EffectOutcome::Done(()))
@@ -146,7 +146,7 @@ impl Effect<ConformanceObject> for EffectB {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         self.recorder.lock().unwrap().push("effect-b".to_string());
         Ok(CleanupAction::Done)
@@ -170,8 +170,8 @@ fn pipeline(
 + Send
 + Sync
 + 'static {
-    move |ops: &KubeHandle, obj: Arc<ConformanceObject>| {
-        Reconcile::new(ops, obj)
+    move |handle: &KubeHandle, obj: Arc<ConformanceObject>| {
+        Reconcile::new(handle, obj)
             .effect(EffectA {
                 recorder: recorder.clone(),
                 attempts: attempts.clone(),

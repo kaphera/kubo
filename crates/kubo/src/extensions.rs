@@ -3,7 +3,7 @@
 //! [`Extensions`] is a map keyed by value type, in the same pattern as
 //! `http::Extensions`. The [`Runtime`](crate::runtime::Runtime) owns one
 //! instance and shares it with every listener through
-//! [`ControllerContext`](crate::listener::ControllerContext) and
+//! [`ListenerContext`](crate::listener::ListenerContext) and
 //! [`RuntimeContext`](crate::runtime::RuntimeContext).
 
 use std::{

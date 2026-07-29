@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     HasConditions,
-    listener::{ControllerContext, Listener},
+    listener::{Listener, ListenerContext},
     reconcile::{ReadyReconcile, Reconcile},
 };
 
@@ -144,7 +144,7 @@ impl Listener<DummyResource> for DummyListener {
 
     fn reconcile<'a>(
         &'a self,
-        _ctx: &'a ControllerContext,
+        _ctx: &'a ListenerContext,
         _obj: Arc<DummyResource>,
         rec: Reconcile<'a, DummyResource>,
     ) -> ReadyReconcile<'a, DummyResource, DummyStatus> {
@@ -173,7 +173,7 @@ impl Listener<DummyResource> for BackoffDummyListener {
 
     fn reconcile<'a>(
         &'a self,
-        _ctx: &'a ControllerContext,
+        _ctx: &'a ListenerContext,
         _obj: Arc<DummyResource>,
         rec: Reconcile<'a, DummyResource>,
     ) -> ReadyReconcile<'a, DummyResource, DummyStatus> {

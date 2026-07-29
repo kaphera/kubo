@@ -24,8 +24,8 @@
 //! impl Poll<Database> for WaitForDatabaseReady {
 //!     type Error = MyError;
 //!
-//!     async fn check(&self, cx: &ReconcileContext<Database>, ops: &KubeHandle) -> Result<PollState, Self::Error> {
-//!         let db = ops.get::<Database>(&ObjectRef::new(&cx.object.namespace, &self.name)).await?;
+//!     async fn check(&self, cx: &ReconcileContext<Database>, handle: &KubeHandle) -> Result<PollState, Self::Error> {
+//!         let db = handle.get::<Database>(&ObjectRef::new(&cx.object.namespace, &self.name)).await?;
 //!         match db {
 //!             Some(db) if has_ready_condition(&db) => Ok(PollState::Done),
 //!             Some(_) => Ok(PollState::Pending {
@@ -88,6 +88,6 @@ pub trait Poll<K: Send + Sync = ()> {
     async fn check(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<PollState, Self::Error>;
 }

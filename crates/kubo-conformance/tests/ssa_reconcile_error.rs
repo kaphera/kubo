@@ -70,7 +70,7 @@ impl Effect<ConformanceObject> for FailingEffect {
     async fn apply(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &kubo::state::State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         // Record-then-fail: prove the framework drove the effect's `apply` on
@@ -103,8 +103,8 @@ fn pipeline(
 + Send
 + Sync
 + 'static {
-    move |ops: &KubeHandle, obj: Arc<ConformanceObject>| {
-        Reconcile::new(ops, obj)
+    move |handle: &KubeHandle, obj: Arc<ConformanceObject>| {
+        Reconcile::new(handle, obj)
             .effect(FailingEffect {
                 recorder: recorder.clone(),
             })

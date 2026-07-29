@@ -11,8 +11,8 @@
 //! children).
 //!
 //! This scenario closes that gap.  Its single effect applies a ConfigMap child
-//! in `apply` (via `ops.apply::<ConfigMap>`) and deletes it in `cleanup` (via
-//! `ops.delete::<ConfigMap>`), so the framework's own SSA-apply and delete code
+//! in `apply` (via `handle.apply::<ConfigMap>`) and deletes it in `cleanup` (via
+//! `handle.delete::<ConfigMap>`), so the framework's own SSA-apply and delete code
 //! paths run end-to-end against both the fake and a real apiserver.  The child's
 //! lifecycle is observed independently through the new `get_path` step (a GET
 //! against an arbitrary path) rather than only through the effect's own return
@@ -89,7 +89,7 @@ impl Effect<ConformanceObject> for ChildEffect {
     async fn apply(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         _state: &kubo::state::State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         // Build the child ConfigMap with deterministic data so the post-apply
@@ -111,7 +111,7 @@ impl Effect<ConformanceObject> for ChildEffect {
         // `run_reconcile_pass` records as an error-class trace entry (the
         // "reconcile errors are trace data, not panics" scenario); here the
         // success path is what the scenario asserts.
-        ops.apply::<ConfigMap>("default", cm).await?;
+        handle.apply::<ConfigMap>("default", cm).await?;
         self.recorder.lock().unwrap().push("applied".to_string());
         Ok(EffectOutcome::Done(()))
     }
@@ -119,12 +119,13 @@ impl Effect<ConformanceObject> for ChildEffect {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<ConformanceObject>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         // The framework's child-delete path during cleanup.  A ConfigMap has no
         // finalizers, so the apiserver removes it immediately; the subsequent
         // `get_path` observes 404 on both backends.
-        ops.delete::<ConfigMap>(&ObjectRef::new("default", &self.child_name))
+        handle
+            .delete::<ConfigMap>(&ObjectRef::new("default", &self.child_name))
             .await?;
         self.recorder.lock().unwrap().push("deleted".to_string());
         Ok(CleanupAction::Done)
@@ -148,8 +149,8 @@ fn pipeline(
 + Send
 + Sync
 + 'static {
-    move |ops: &KubeHandle, obj: Arc<ConformanceObject>| {
-        Reconcile::new(ops, obj)
+    move |handle: &KubeHandle, obj: Arc<ConformanceObject>| {
+        Reconcile::new(handle, obj)
             .effect(ChildEffect {
                 recorder: recorder.clone(),
                 child_name: child_name.clone(),
@@ -173,14 +174,14 @@ const SCENARIO_NAME: &str = "ssa-effect-apply";
 /// Procedure:
 /// 1. Apply the parent conformance object (empty spec).
 /// 2. `run_reconcile` — apply pass: the effect applies the ConfigMap child via
-///    `ops.apply`; the framework adds the finalizer and `pendingCleanup:
+///    `handle.apply`; the framework adds the finalizer and `pendingCleanup:
 ///    ["child-effect"]`.
 /// 3. `get` the parent — observe the finalizer and the ledger entry.
 /// 4. `get_path` the child — observe it exists (200) with the expected data.
 /// 5. `delete` the parent — set `deletionTimestamp` (retained — finalizer
 ///    present).
 /// 6. `run_reconcile` — cleanup pass: the effect deletes the child via
-///    `ops.delete`; the framework strikes the ledger entry and clears the
+///    `handle.delete`; the framework strikes the ledger entry and clears the
 ///    finalizer.
 /// 7. `get_path` the child — observe it is gone (404).
 ///
@@ -254,7 +255,7 @@ fn reconcile_child_lifecycle_matches_fake_and_real() {
     );
 
     // The child ConfigMap exists with the expected data — independent
-    // observation that the framework's `ops.apply` actually persisted the child.
+    // observation that the framework's `handle.apply` actually persisted the child.
     let fake_child_after_apply = fake_trace.entry("child-after-apply");
     assert_eq!(
         fake_child_after_apply.status, 200,
@@ -271,7 +272,7 @@ fn reconcile_child_lifecycle_matches_fake_and_real() {
     );
 
     // After the cleanup pass, the child is gone — independent observation
-    // that the framework's `ops.delete` removed the child.
+    // that the framework's `handle.delete` removed the child.
     let fake_child_after_cleanup = fake_trace.entry("child-after-cleanup");
     assert_eq!(
         fake_child_after_cleanup.status, 404,

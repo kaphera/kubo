@@ -59,7 +59,7 @@ use crate::{
     HasConditions, ReconcileContext, ReconcilerError,
     backoff::{Backoff, BackoffContext},
     effect::Effect,
-    environment::{EnvResource, EnvironmentError, KubeHandle, ObjectRef},
+    environment::{EnvironmentError, KubeHandle, NamespaceResource, ObjectRef},
     gate::Gate,
     group::Group,
     poll::Poll,
@@ -111,7 +111,7 @@ pub enum ReconcileError {
 /// ```rust,ignore (illustrative fragment: placeholder literals and undefined context)
 /// use kubo::reconcile::Reconcile;
 ///
-/// Reconcile::new(ctx.ops(), obj.clone())
+/// Reconcile::new(ctx.handle(), obj.clone())
 ///     .ready_reason("Provisioned", "All resources ready")
 ///     .gate(MyGate { .. })
 ///     .effect(CreateExternalThing { .. })
@@ -123,8 +123,8 @@ pub enum ReconcileError {
 ///     .execute(FINALIZER)
 ///     .await
 /// ```
-pub struct Reconcile<'r, R: EnvResource + HasConditions> {
-    ops: &'r KubeHandle,
+pub struct Reconcile<'r, R: NamespaceResource + HasConditions> {
+    handle: &'r KubeHandle,
     cx: ConditionContext,
     conditions: Vec<Condition>,
     obj: Arc<R>,
@@ -134,17 +134,17 @@ pub struct Reconcile<'r, R: EnvResource + HasConditions> {
     rotation_annotation: Option<&'r str>,
 }
 
-impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
+impl<'r, R: NamespaceResource + HasConditions> Reconcile<'r, R> {
     /// Start a reconcile pass.
     ///
     /// The framework derives `generation` and initial `conditions` from the
     /// object automatically. Use [`ready_reason`](Self::ready_reason) to
     /// configure the terminal Ready condition.
-    pub fn new(ops: &'r KubeHandle, obj: Arc<R>) -> Self {
+    pub fn new(handle: &'r KubeHandle, obj: Arc<R>) -> Self {
         let generation = obj.meta().generation.unwrap_or(0);
         let conditions = obj.conditions();
         Self {
-            ops,
+            handle,
             cx: ConditionContext::new(generation),
             conditions,
             obj,
@@ -391,7 +391,9 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                     .into_iter()
                     .filter(|f| f.as_str() != finalizer_name)
                     .collect();
-                self.ops.patch_finalizers::<R>(&obj_ref, finalizers).await?;
+                self.handle
+                    .patch_finalizers::<R>(&obj_ref, finalizers)
+                    .await?;
             }
             Ok(action)
         } else {
@@ -401,7 +403,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                 let obj_ref = ObjectRef::new(&namespace, &name);
                 let mut new_finalizers = existing_finalizers;
                 new_finalizers.push(finalizer_name.to_string());
-                self.ops
+                self.handle
                     .patch_finalizers::<R>(&obj_ref, new_finalizers)
                     .await?;
             }
@@ -432,7 +434,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
     /// effects, and polls are registered:
     ///
     /// ```rust,ignore (illustrative fragment: placeholder literals)
-    /// Reconcile::new(ops, obj)
+    /// Reconcile::new(handle, obj)
     ///     .effect(CreateDatabase { .. })
     ///     .poll(WaitForReady { .. })
     ///     .status(|state, prev| MyStatus {
@@ -475,7 +477,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         T: Serialize + Default + PartialEq + Clone,
         F: Fn(&State, &T) -> T,
     {
-        let ops = self.ops;
+        let handle = self.handle;
         let generation = self.obj.meta().generation.unwrap_or(0);
         let mut state = State::new();
         let mut last_patched: Option<ResourceStatus<T>> = None;
@@ -494,7 +496,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         };
 
         for step in self.apply_steps.iter() {
-            match step.run_apply(&cx, ops, &mut state).await {
+            match step.run_apply(&cx, handle, &mut state).await {
                 StepProgress::Continue => {
                     if let Some(name) = step.effect_name() {
                         if !pending_cleanup.iter().any(|n| n == name) {
@@ -509,7 +511,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                         resource,
                     };
                     if last_patched.as_ref() != Some(&wrapped) {
-                        patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await?;
+                        patch_status_via_handle::<R, _>(handle, obj_ref, &wrapped).await?;
                         last_patched = Some(wrapped);
                     }
                 }
@@ -524,7 +526,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                         resource,
                     };
                     if last_patched.as_ref() != Some(&wrapped) {
-                        patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await?;
+                        patch_status_via_handle::<R, _>(handle, obj_ref, &wrapped).await?;
                     }
                     return Ok(Action::requeue(retry_after));
                 }
@@ -541,11 +543,11 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
             resource,
         };
         if last_patched.as_ref() != Some(&wrapped) {
-            patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await?;
+            patch_status_via_handle::<R, _>(handle, obj_ref, &wrapped).await?;
         }
 
         if let Some(key) = rotation_key {
-            if let Err(e) = ops.remove_annotation::<R>(obj_ref, key).await {
+            if let Err(e) = handle.remove_annotation::<R>(obj_ref, key).await {
                 warn!(
                     error = %e,
                     annotation = %key,
@@ -587,7 +589,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
         T: Serialize + Default + PartialEq + Clone,
         F: Fn(&State, &T) -> T,
     {
-        let ops = self.ops;
+        let handle = self.handle;
         let generation = self.obj.meta().generation.unwrap_or(0);
         let state = State::new();
 
@@ -608,7 +610,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                 continue;
             }
 
-            match step.run_cleanup(&cx, ops).await {
+            match step.run_cleanup(&cx, handle).await {
                 CleanupProgress::Continue => {
                     outstanding.retain(|n| n != name);
                     let resource = build_status(&state, prev_resource);
@@ -618,7 +620,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                         pending_cleanup: outstanding.clone(),
                         resource,
                     };
-                    let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
+                    let _ = patch_status_via_handle::<R, _>(handle, obj_ref, &wrapped).await;
                 }
                 CleanupProgress::Retry(backoff) => {
                     let retry_after = backoff.next(BackoffContext {
@@ -640,7 +642,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
                         pending_cleanup: outstanding.clone(),
                         resource,
                     };
-                    let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
+                    let _ = patch_status_via_handle::<R, _>(handle, obj_ref, &wrapped).await;
                     return Ok(Action::requeue(retry_after));
                 }
                 CleanupProgress::Error(e) => return Err(e.into()),
@@ -662,7 +664,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
             pending_cleanup: Vec::new(),
             resource,
         };
-        let _ = patch_status_via_ops::<R, _>(ops, obj_ref, &wrapped).await;
+        let _ = patch_status_via_handle::<R, _>(handle, obj_ref, &wrapped).await;
         Ok(Action::await_change())
     }
 }
@@ -672,7 +674,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
 /// Produced by [`Reconcile::status`]. Call [`ReadyReconcile::execute`] for the
 /// full finalizer-managed lifecycle, or [`ReadyReconcile::converge`] to run
 /// the pipeline without finalizer management.
-pub struct ReadyReconcile<'r, R: EnvResource + HasConditions, T>
+pub struct ReadyReconcile<'r, R: NamespaceResource + HasConditions, T>
 where
     T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
 {
@@ -680,7 +682,7 @@ where
     build_status: Box<dyn Fn(&State, &T) -> T + Send + Sync + 'r>,
 }
 
-impl<'r, R: EnvResource + HasConditions, T> ReadyReconcile<'r, R, T>
+impl<'r, R: NamespaceResource + HasConditions, T> ReadyReconcile<'r, R, T>
 where
     T: Serialize + DeserializeOwned + Default + PartialEq + Clone,
 {
@@ -708,10 +710,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        self.0.run_apply(cx, ops, state).await
+        self.0.run_apply(cx, handle, state).await
     }
 
     fn effect_name(&self) -> Option<&'static str> {
@@ -730,9 +732,9 @@ where
     async fn run_cleanup<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
     ) -> CleanupProgress {
-        self.0.run_cleanup(cx, ops).await
+        self.0.run_cleanup(cx, handle).await
     }
 
     fn effect_name(&self) -> Option<&'static str> {
@@ -743,18 +745,19 @@ where
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /// Serialize the status value and patch it via KubeHandle.
-async fn patch_status_via_ops<R, S>(
-    ops: &KubeHandle,
+async fn patch_status_via_handle<R, S>(
+    handle: &KubeHandle,
     obj_ref: &ObjectRef,
     status: &S,
 ) -> Result<(), ReconcileError>
 where
-    R: EnvResource,
+    R: NamespaceResource,
     S: Serialize,
 {
     let value = serde_json::to_value(status)
         .map_err(|e| ReconcilerError::Env(EnvironmentError::Serde(e)))?;
-    ops.patch_status::<R>(obj_ref, value)
+    handle
+        .patch_status::<R>(obj_ref, value)
         .await
         .map_err(ReconcilerError::Env)?;
     Ok(())

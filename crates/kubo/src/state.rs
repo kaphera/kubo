@@ -19,7 +19,7 @@
 //!
 //! ```rust,ignore (illustrative fragment: bare method sketch outside its impl)
 //! // In your effect's apply method:
-//! async fn apply(&self, cx: &ReconcileContext<K>, ops: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
+//! async fn apply(&self, cx: &ReconcileContext<K>, handle: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
 //!     let upstream_url = state.require::<ResolveDatabase>()?;
 //!     // Use upstream_url to configure this effect...
 //!     Ok(EffectOutcome::Done(format!("{upstream_url}/my-table")))

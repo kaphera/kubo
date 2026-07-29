@@ -15,7 +15,7 @@
 //! Effects must be **self-contained for cleanup**. During the cleanup phase, the
 //! state bag from the original apply pass is not available. The cleanup method must
 //! re-derive any context it needs (object references, credentials, API clients)
-//! from `ops` directly or from fields on the effect struct.
+//! from `handle` directly or from fields on the effect struct.
 //!
 //! # Implementing an Effect
 //!
@@ -33,13 +33,13 @@
 //! impl Effect<VaultKvMount> for CreateVaultMount {
 //!     type Error = MyError;
 //!
-//!     async fn apply(&self, cx: &ReconcileContext<VaultKvMount>, ops: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
+//!     async fn apply(&self, cx: &ReconcileContext<VaultKvMount>, handle: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
 //!         let vault_addr = state.require::<ResolveVaultInstance>()?;
 //!         // ... create the mount via Vault API ...
 //!         Ok(EffectOutcome::Done(format!("{}/{}/kv", self.namespace, self.name)))
 //!     }
 //!
-//!     async fn cleanup(&self, cx: &ReconcileContext<VaultKvMount>, ops: &KubeHandle) -> Result<CleanupAction, Self::Error> {
+//!     async fn cleanup(&self, cx: &ReconcileContext<VaultKvMount>, handle: &KubeHandle) -> Result<CleanupAction, Self::Error> {
 //!         // ... delete the mount via Vault API ...
 //!         Ok(CleanupAction::Done)
 //!     }
@@ -137,7 +137,7 @@ pub trait Effect<K: Send + Sync = ()>: StateKey {
     async fn apply(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         state: &State,
     ) -> Result<EffectOutcome<<Self as StateKey>::Value>, Self::Error>;
 
@@ -146,7 +146,7 @@ pub trait Effect<K: Send + Sync = ()>: StateKey {
     /// Called during the `Cleanup` phase (finalizer deletion) in reverse
     /// declaration order. The implementation should be self-contained:
     /// it must re-derive any context it needs (secrets, tokens, client
-    /// connections) from `ops` directly, since the state bag from the
+    /// connections) from `handle` directly, since the state bag from the
     /// original apply pass is not available.
     ///
     /// The default returns [`CleanupAction::Skip`], indicating that no
@@ -154,10 +154,10 @@ pub trait Effect<K: Send + Sync = ()>: StateKey {
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         let _ = cx;
-        let _ = ops;
+        let _ = handle;
         Ok(CleanupAction::Skip)
     }
 

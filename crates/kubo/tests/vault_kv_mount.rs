@@ -127,10 +127,10 @@ impl Gate<VaultKvMount> for ResolveVaultInstance {
     async fn evaluate(
         &self,
         cx: &ReconcileContext<VaultKvMount>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<Outcome<String>, Self::Error> {
         let r = ObjectRef::new(&cx.object.namespace, &self.instance_ref);
-        let instance: Option<VaultInstance> = ops.get(&r).await?;
+        let instance: Option<VaultInstance> = handle.get(&r).await?;
 
         match instance {
             None => Ok(Outcome::Wait {
@@ -180,7 +180,7 @@ impl Effect<VaultKvMount> for EnableKv2Mount {
     async fn apply(
         &self,
         cx: &ReconcileContext<VaultKvMount>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &State,
     ) -> Result<EffectOutcome<String>, Self::Error> {
         if !self.vault_available.load(Ordering::Relaxed) {
@@ -200,7 +200,7 @@ impl Effect<VaultKvMount> for EnableKv2Mount {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<VaultKvMount>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         if !self.vault_available.load(Ordering::Relaxed) {
             return Ok(CleanupAction::Retry(Box::new(Fixed::new(
@@ -237,7 +237,7 @@ impl Effect<VaultKvMount> for CreateAccessSecret {
     async fn apply(
         &self,
         cx: &ReconcileContext<VaultKvMount>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         let mount_path = state
@@ -255,7 +255,7 @@ impl Effect<VaultKvMount> for CreateAccessSecret {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<VaultKvMount>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         self.cleaned_up.store(true, Ordering::Relaxed);
         Ok(CleanupAction::Done)
@@ -277,7 +277,7 @@ impl Poll<VaultKvMount> for WaitForMountReady {
     async fn check(
         &self,
         cx: &ReconcileContext<VaultKvMount>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<PollState, Self::Error> {
         if self.ready.load(Ordering::Relaxed) {
             Ok(PollState::Done)
@@ -312,7 +312,7 @@ async fn world_with_ready_vault_instance(ns: &str, vault_name: &str, address: &s
 }
 
 /// Build a `KubeHandle` from a `World`'s client.
-fn ops_for(world: &World) -> KubeHandle {
+fn handle_for(world: &World) -> KubeHandle {
     KubeHandle::new(world.client().clone(), "kubo-test")
 }
 
@@ -329,7 +329,7 @@ async fn pipeline_composes_with_typed_state() {
     let world =
         world_with_ready_vault_instance("test-ns", "my-vault", "http://vault.test-ns.svc:8200")
             .await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let vault_available = Arc::new(AtomicBool::new(true));
     let mount_ready = Arc::new(AtomicBool::new(true));
@@ -340,7 +340,7 @@ async fn pipeline_composes_with_typed_state() {
 
     // Build the reconcile pipeline — validates type composition.
     let obj = make_kvm("test-ns", "my-kvm", false);
-    let _reconcile = Reconcile::new(&ops, obj.clone())
+    let _reconcile = Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: instance_ref.clone(),
@@ -394,7 +394,7 @@ fn typed_state_prevents_wrong_type() {
 #[tokio::test]
 async fn gate_waits_when_instance_missing() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let gate = ResolveVaultInstance {
         instance_ref: "missing-vault".to_string(),
@@ -408,7 +408,7 @@ async fn gate_waits_when_instance_missing() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = gate.evaluate(&rcx, &ops).await.unwrap();
+    let result = gate.evaluate(&rcx, &handle).await.unwrap();
     assert!(!result.is_pass());
 }
 
@@ -416,7 +416,7 @@ async fn gate_waits_when_instance_missing() {
 #[tokio::test]
 async fn gate_passes_when_instance_ready() {
     let world = world_with_ready_vault_instance("test-ns", "my-vault", "http://vault:8200").await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let gate = ResolveVaultInstance {
         instance_ref: "my-vault".to_string(),
@@ -430,7 +430,7 @@ async fn gate_passes_when_instance_ready() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = gate.evaluate(&rcx, &ops).await.unwrap();
+    let result = gate.evaluate(&rcx, &handle).await.unwrap();
     assert!(result.is_pass());
 }
 
@@ -438,7 +438,7 @@ async fn gate_passes_when_instance_ready() {
 #[tokio::test]
 async fn effect_writes_to_typed_state() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let vault_available = Arc::new(AtomicBool::new(true));
     let cleaned_up = Arc::new(AtomicBool::new(false));
     let state = State::new();
@@ -456,7 +456,7 @@ async fn effect_writes_to_typed_state() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let outcome = effect.apply(&rcx, &ops, &state).await.unwrap();
+    let outcome = effect.apply(&rcx, &handle, &state).await.unwrap();
 
     // Verify the returned value (framework inserts it into state).
     match outcome {
@@ -469,7 +469,7 @@ async fn effect_writes_to_typed_state() {
 #[tokio::test]
 async fn effect_errors_when_vault_down() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let vault_available = Arc::new(AtomicBool::new(false));
     let cleaned_up = Arc::new(AtomicBool::new(false));
     let state = State::new();
@@ -487,7 +487,7 @@ async fn effect_errors_when_vault_down() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = effect.apply(&rcx, &ops, &state).await;
+    let result = effect.apply(&rcx, &handle, &state).await;
     assert!(result.is_err());
 }
 
@@ -495,7 +495,7 @@ async fn effect_errors_when_vault_down() {
 #[tokio::test]
 async fn cleanup_retries_when_vault_down() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let vault_available = Arc::new(AtomicBool::new(false));
     let cleaned_up = Arc::new(AtomicBool::new(false));
 
@@ -512,7 +512,7 @@ async fn cleanup_retries_when_vault_down() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = effect.cleanup(&rcx, &ops).await.unwrap();
+    let result = effect.cleanup(&rcx, &handle).await.unwrap();
     assert!(matches!(result, CleanupAction::Retry(_)));
     assert!(!cleaned_up.load(Ordering::Relaxed));
 }
@@ -521,7 +521,7 @@ async fn cleanup_retries_when_vault_down() {
 #[tokio::test]
 async fn cleanup_succeeds_when_vault_available() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let vault_available = Arc::new(AtomicBool::new(true));
     let cleaned_up = Arc::new(AtomicBool::new(false));
 
@@ -538,7 +538,7 @@ async fn cleanup_succeeds_when_vault_available() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = effect.cleanup(&rcx, &ops).await.unwrap();
+    let result = effect.cleanup(&rcx, &handle).await.unwrap();
     assert!(matches!(result, CleanupAction::Done));
     assert!(cleaned_up.load(Ordering::Relaxed));
 }
@@ -547,7 +547,7 @@ async fn cleanup_succeeds_when_vault_available() {
 #[tokio::test]
 async fn effect_chain_reads_state_from_prior() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let mut state = State::new();
 
     // Simulate the framework having inserted EnableKv2Mount's output:
@@ -567,7 +567,7 @@ async fn effect_chain_reads_state_from_prior() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = effect.apply(&rcx, &ops, &state).await;
+    let result = effect.apply(&rcx, &handle, &state).await;
     assert!(result.is_ok());
 }
 
@@ -575,7 +575,7 @@ async fn effect_chain_reads_state_from_prior() {
 #[tokio::test]
 async fn effect_fails_without_prior_state() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let state = State::new(); // Empty — no EnableKv2Mount inserted.
 
     let effect = CreateAccessSecret {
@@ -591,7 +591,7 @@ async fn effect_fails_without_prior_state() {
         condition: &cond_cx,
         cr: &*kvm,
     };
-    let result = effect.apply(&rcx, &ops, &state).await;
+    let result = effect.apply(&rcx, &handle, &state).await;
     assert!(result.is_err());
 }
 
@@ -651,13 +651,13 @@ async fn run_apply_full_pipeline() {
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
 
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let vault_available = Arc::new(AtomicBool::new(true));
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
-    let action = Reconcile::new(&ops, obj.clone())
+    let action = Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -711,14 +711,14 @@ async fn run_cleanup_removes_finalizer() {
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
 
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let vault_available = Arc::new(AtomicBool::new(true));
     let effect1_cleaned = Arc::new(AtomicBool::new(false));
     let effect2_cleaned = Arc::new(AtomicBool::new(false));
 
     // 1. Apply pass: gate passes, both effects run, ledger is populated.
-    Reconcile::new(&ops, obj.clone())
+    Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -758,7 +758,7 @@ async fn run_cleanup_removes_finalizer() {
     let deleting = world.get::<VaultKvMount>("test-ns", "my-kvm").unwrap();
     let deleting = Arc::new(deleting);
 
-    let action = Reconcile::new(&ops, deleting)
+    let action = Reconcile::new(&handle, deleting)
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
         })
@@ -805,9 +805,9 @@ async fn run_apply_gate_waits() {
     let world = World::builder().build().await;
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
-    let action = Reconcile::new(&ops, obj.clone())
+    let action = Reconcile::new(&handle, obj.clone())
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
         })
@@ -847,11 +847,11 @@ async fn run_apply_patches_status_on_tick() {
     let world = world_with_ready_vault_instance("test-ns", "my-vault", "http://vault:8200").await;
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let vault_available = Arc::new(AtomicBool::new(true));
 
-    let action = Reconcile::new(&ops, obj.clone())
+    let action = Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -915,7 +915,7 @@ async fn run_apply_skips_redundant_patches() {
     let world = world_with_ready_vault_instance("test-ns", "my-vault", "http://vault:8200").await;
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     // Use a counter to track how many times the status closure is called
     // with a NEW value (by tracking unique observed values).
@@ -926,7 +926,7 @@ async fn run_apply_skips_redundant_patches() {
     // (except conditions change when Ready is set at the end).  Between
     // gate and effects, conditions don't change, so the closure output
     // should be identical → skip patch.
-    let _action = Reconcile::new(&ops, obj.clone())
+    let _action = Reconcile::new(&handle, obj.clone())
         .ready_reason("Ready", "done")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -981,9 +981,9 @@ async fn status_ticks_show_causal_progression() {
     let world = world_with_ready_vault_instance("test-ns", "my-vault", "http://vault:8200").await;
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
-    let _action = Reconcile::new(&ops, obj.clone())
+    let _action = Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .gate(ResolveVaultInstance {
             instance_ref: "my-vault".to_string(),
@@ -1084,7 +1084,7 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
     let obj = Arc::new(kvm);
     world.prefill((*obj).clone());
 
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     // Track whether effects saw the rotation marker.
     let saw_rotation = Arc::new(AtomicBool::new(false));
@@ -1106,7 +1106,7 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
         async fn apply(
             &self,
             _cx: &ReconcileContext<VaultKvMount>,
-            _ops: &KubeHandle,
+            _handle: &KubeHandle,
             state: &State,
         ) -> Result<EffectOutcome<()>, Self::Error> {
             if state.contains::<RotationRequested>() {
@@ -1116,7 +1116,7 @@ async fn rotation_annotation_triggers_state_and_is_removed() {
         }
     }
 
-    let _action = Reconcile::new(&ops, obj.clone())
+    let _action = Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .rotation_annotation("test.kaphera.cloud/rotate-requested")
         .gate(ResolveVaultInstance {
@@ -1159,7 +1159,7 @@ async fn no_rotation_when_annotation_absent() {
     let obj = make_kvm("test-ns", "my-kvm", false);
     world.prefill((*obj).clone());
 
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let saw_rotation = Arc::new(AtomicBool::new(false));
     let saw_rotation_clone = saw_rotation.clone();
@@ -1179,7 +1179,7 @@ async fn no_rotation_when_annotation_absent() {
         async fn apply(
             &self,
             _cx: &ReconcileContext<VaultKvMount>,
-            _ops: &KubeHandle,
+            _handle: &KubeHandle,
             state: &State,
         ) -> Result<EffectOutcome<()>, Self::Error> {
             if state.contains::<RotationRequested>() {
@@ -1189,7 +1189,7 @@ async fn no_rotation_when_annotation_absent() {
         }
     }
 
-    let _action = Reconcile::new(&ops, obj.clone())
+    let _action = Reconcile::new(&handle, obj.clone())
         .ready_reason("MountReady", "KV-v2 mount is provisioned")
         .rotation_annotation("test.kaphera.cloud/rotate-requested")
         .gate(ResolveVaultInstance {

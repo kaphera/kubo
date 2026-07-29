@@ -9,7 +9,7 @@
 //! `Action::requeue`, or something else?
 //!
 //! Reading `crates/kubo/src/reconcile.rs` pins the answer before the scenario
-//! is written: `run_apply` calls `patch_status_via_ops`, which calls
+//! is written: `run_apply` calls `patch_status_via_handle`, which calls
 //! `KubeHandle::patch_status` (SSA, non-force) and propagates the failure
 //! with `?`. There is no catch, no requeue-on-conflict, no retry; a 409 on
 //! status surfaces as `Err(ReconcileError)` straight out of
@@ -77,8 +77,8 @@ fn pipeline() -> impl for<'a> Fn(
 > + Send
 + Sync
 + 'static {
-    move |ops: &kubo::environment::KubeHandle, obj: std::sync::Arc<ConformanceObject>| {
-        Reconcile::new(ops, obj)
+    move |handle: &kubo::environment::KubeHandle, obj: std::sync::Arc<ConformanceObject>| {
+        Reconcile::new(handle, obj)
             .status(|_state, _prev: &ConformanceFields| ConformanceFields::default())
     }
 }

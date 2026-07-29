@@ -177,15 +177,15 @@ where
     async fn apply(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         _state: &State,
     ) -> Result<EffectOutcome<String>, ReconcilerError> {
         let child = self.renderer.child_ref(cx.cr);
         let mut cm = self.renderer.render(cx.cr).map_err(Into::into)?;
         cm.metadata.name = Some(child.name.clone());
         cm.metadata.namespace = Some(child.namespace.clone());
-        ops.apply(&child.namespace, cm).await?;
-        let applied = ops.get::<ConfigMap>(&child).await?.ok_or_else(|| {
+        handle.apply(&child.namespace, cm).await?;
+        let applied = handle.get::<ConfigMap>(&child).await?.ok_or_else(|| {
             ReconcilerError::from(EnvironmentError::Other(format!(
                 "child ConfigMap {}/{} not found after apply",
                 child.namespace, child.name
@@ -212,13 +212,13 @@ where
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         let child = self.renderer.child_ref(cx.cr);
-        if ops.get::<ConfigMap>(&child).await?.is_none() {
+        if handle.get::<ConfigMap>(&child).await?.is_none() {
             return Ok(CleanupAction::Done);
         }
-        ops.delete::<ConfigMap>(&child).await?;
+        handle.delete::<ConfigMap>(&child).await?;
         Ok(CleanupAction::Done)
     }
 
@@ -402,7 +402,7 @@ fn make_source(ns: &str, name: &str) -> Arc<SettingsSource> {
     Arc::new(r)
 }
 
-fn ops_for(world: &World) -> KubeHandle {
+fn handle_for(world: &World) -> KubeHandle {
     KubeHandle::new(world.client().clone(), "kubo-test")
 }
 
@@ -424,14 +424,14 @@ fn target_ledger_of(world: &World, ns: &str, name: &str) -> Vec<String> {
 #[tokio::test]
 async fn apply_config_map_serves_two_kinds() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let target = make_target("ns", "target");
     world.prefill((*target).clone());
     let source = make_source("ns", "source");
     world.prefill((*source).clone());
 
-    Reconcile::new(&ops, target)
+    Reconcile::new(&handle, target)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
             config_rv: state
@@ -443,7 +443,7 @@ async fn apply_config_map_serves_two_kinds() {
         .await
         .unwrap();
 
-    Reconcile::new(&ops, source)
+    Reconcile::new(&handle, source)
         .effect(ApplyConfigMap::new(SettingsSourceRenderer))
         .status(|state, _prev: &SettingsSourceFields| SettingsSourceFields {
             settings_rv: state
@@ -545,12 +545,12 @@ async fn apply_config_map_serves_two_kinds() {
 #[tokio::test]
 async fn two_instantiations_compose_in_one_pipeline() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let obj = make_target("ns", "composed");
     world.prefill((*obj).clone());
 
-    Reconcile::new(&ops, obj)
+    Reconcile::new(&handle, obj)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer))
         .effect(ApplyConfigMap::new(ConfigTargetOverlayRenderer))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
@@ -641,7 +641,7 @@ async fn two_instantiations_compose_in_one_pipeline() {
 
     world.delete::<ConfigTarget>("ns", "composed").await;
     let deleting = Arc::new(world.get::<ConfigTarget>("ns", "composed").unwrap());
-    Reconcile::new(&ops, deleting)
+    Reconcile::new(&handle, deleting)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer))
         .effect(ApplyConfigMap::new(ConfigTargetOverlayRenderer))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
@@ -702,12 +702,12 @@ fn distinct_instantiations_have_isolated_state() {
 #[tokio::test]
 async fn cleanup_removes_configmap_and_clears_ledger() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let obj = make_target("ns", "obj");
     world.prefill((*obj).clone());
 
-    Reconcile::new(&ops, obj)
+    Reconcile::new(&handle, obj)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer).named("test-config-map"))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
             config_rv: state
@@ -726,13 +726,13 @@ async fn cleanup_removes_configmap_and_clears_ledger() {
     );
     let child = ObjectRef::new("ns", "obj-config");
     assert!(
-        ops.get::<ConfigMap>(&child).await.unwrap().is_some(),
+        handle.get::<ConfigMap>(&child).await.unwrap().is_some(),
         "ConfigMap exists after apply"
     );
 
     world.delete::<ConfigTarget>("ns", "obj").await;
     let deleting = Arc::new(world.get::<ConfigTarget>("ns", "obj").unwrap());
-    Reconcile::new(&ops, deleting)
+    Reconcile::new(&handle, deleting)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer).named("test-config-map"))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
             config_rv: state
@@ -759,12 +759,12 @@ async fn cleanup_removes_configmap_and_clears_ledger() {
 #[tokio::test]
 async fn cleanup_tolerates_missing_child() {
     let world = World::builder().build().await;
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let obj = make_target("ns", "obj");
     world.prefill((*obj).clone());
 
-    Reconcile::new(&ops, obj)
+    Reconcile::new(&handle, obj)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer).named("test-config-map"))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
             config_rv: state
@@ -777,11 +777,11 @@ async fn cleanup_tolerates_missing_child() {
         .unwrap();
 
     let child = ObjectRef::new("ns", "obj-config");
-    ops.delete::<ConfigMap>(&child).await.unwrap();
+    handle.delete::<ConfigMap>(&child).await.unwrap();
 
     world.delete::<ConfigTarget>("ns", "obj").await;
     let deleting = Arc::new(world.get::<ConfigTarget>("ns", "obj").unwrap());
-    Reconcile::new(&ops, deleting)
+    Reconcile::new(&handle, deleting)
         .effect(ApplyConfigMap::new(ConfigTargetRenderer).named("test-config-map"))
         .status(|state, _prev: &ConfigTargetFields| ConfigTargetFields {
             config_rv: state

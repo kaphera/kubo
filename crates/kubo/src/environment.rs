@@ -8,7 +8,7 @@
 //! `KubeHandle` backed by a `kubo_test_fakeapi::FakeApiServer` — no cluster
 //! needed.
 //!
-//! [`EnvResource`] and [`ClusterEnvResource`] are bound-collection aliases
+//! [`NamespaceResource`] and [`ClusterResource`] are bound-collection aliases
 //! for the constraints every typed Kubernetes resource must satisfy.  They are
 //! auto-implemented; you never write them manually.
 
@@ -46,7 +46,7 @@ pub enum EnvironmentError {
 /// Auto-implemented for any type satisfying the constraints. You never
 /// implement this manually — if your CRD derives `CustomResource` with
 /// `namespaced`, it satisfies this automatically.
-pub trait EnvResource:
+pub trait NamespaceResource:
     Resource<Scope = NamespaceResourceScope, DynamicType = ()>
     + Clone
     + fmt::Debug
@@ -58,7 +58,7 @@ pub trait EnvResource:
 {
 }
 
-impl<T> EnvResource for T where
+impl<T> NamespaceResource for T where
     T: Resource<Scope = NamespaceResourceScope, DynamicType = ()>
         + Clone
         + fmt::Debug
@@ -73,7 +73,7 @@ impl<T> EnvResource for T where
 /// Bound alias for cluster-scoped Kubernetes resources.
 ///
 /// Auto-implemented for any type satisfying the constraints.
-pub trait ClusterEnvResource:
+pub trait ClusterResource:
     Resource<Scope = ClusterResourceScope, DynamicType = ()>
     + Clone
     + fmt::Debug
@@ -85,7 +85,7 @@ pub trait ClusterEnvResource:
 {
 }
 
-impl<T> ClusterEnvResource for T where
+impl<T> ClusterResource for T where
     T: Resource<Scope = ClusterResourceScope, DynamicType = ()>
         + Clone
         + fmt::Debug

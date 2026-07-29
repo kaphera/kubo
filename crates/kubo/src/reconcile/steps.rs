@@ -22,7 +22,7 @@ pub(super) trait ApplyStep<K: Send + Sync>: Send + Sync {
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress;
 
@@ -36,7 +36,7 @@ pub(super) trait CleanableStep<K: Send + Sync>: Send + Sync {
     async fn run_cleanup<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
     ) -> CleanupProgress;
 
     fn effect_name(&self) -> Option<&'static str> {
@@ -74,10 +74,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        match self.gate.evaluate(cx, ops).await {
+        match self.gate.evaluate(cx, handle).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<G>(v);
                 StepProgress::Continue
@@ -117,10 +117,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        match self.gate.evaluate(cx, ops).await {
+        match self.gate.evaluate(cx, handle).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<J>(v);
                 StepProgress::Continue
@@ -155,10 +155,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         _state: &mut State,
     ) -> StepProgress {
-        match self.gate.evaluate(cx, ops).await {
+        match self.gate.evaluate(cx, handle).await {
             Ok(Outcome::Pass(_)) => StepProgress::Continue,
             Ok(Outcome::Wait { condition, backoff }) => StepProgress::Wait { condition, backoff },
             Err(e) => StepProgress::Error(e.into()),
@@ -196,10 +196,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         state: &mut State,
     ) -> StepProgress {
-        match self.effect.apply(cx, ops, state).await {
+        match self.effect.apply(cx, handle, state).await {
             Ok(EffectOutcome::Done(v)) => {
                 state.insert::<F>(v);
                 StepProgress::Continue
@@ -227,9 +227,9 @@ where
     async fn run_cleanup<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
     ) -> CleanupProgress {
-        match self.effect.cleanup(cx, ops).await {
+        match self.effect.cleanup(cx, handle).await {
             Ok(CleanupAction::Skip) | Ok(CleanupAction::Done) => CleanupProgress::Continue,
             Ok(CleanupAction::Retry(backoff)) => CleanupProgress::Retry(backoff),
             Err(e) => CleanupProgress::Error(e.into()),
@@ -263,10 +263,10 @@ where
     async fn run_apply<'a>(
         &'a self,
         cx: &'a ReconcileContext<K>,
-        ops: &'a KubeHandle,
+        handle: &'a KubeHandle,
         _state: &mut State,
     ) -> StepProgress {
-        match self.poll.check(cx, ops).await {
+        match self.poll.check(cx, handle).await {
             Ok(PollState::Done) => StepProgress::Continue,
             Ok(PollState::Pending { condition, backoff }) => {
                 StepProgress::Wait { condition, backoff }

@@ -39,7 +39,7 @@
 
 use std::fmt;
 
-use crate::environment::EnvResource;
+use crate::environment::NamespaceResource;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
 use crate::testing::World;
@@ -119,7 +119,7 @@ pub fn is_ready(conditions: &[Condition]) -> bool {
 ///
 /// The assertion passes if the object no longer exists (it was fully
 /// garbage-collected) or if it still exists but carries no matching finalizer.
-pub fn assert_no_leaks<T: EnvResource>(world: &World, ns: &str, name: &str, finalizer: &str) {
+pub fn assert_no_leaks<T: NamespaceResource>(world: &World, ns: &str, name: &str, finalizer: &str) {
     let Some(obj) = world.get::<T>(ns, name) else {
         // Object was deleted entirely — no leaks possible.
         return;

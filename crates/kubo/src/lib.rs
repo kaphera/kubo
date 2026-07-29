@@ -19,7 +19,7 @@
 //! - [`Listener`](crate::listener::Listener) declares one controller: the
 //!   resource kind it watches and the pipeline built in
 //!   [`Listener::reconcile`](crate::listener::Listener::reconcile). Both methods
-//!   receive a [`ControllerContext`](crate::listener::ControllerContext), the
+//!   receive a [`ListenerContext`](crate::listener::ListenerContext), the
 //!   per-leadership-term context holding the [`KubeHandle`]
 //!   and the extensions map.
 //! - [`Reconcile`](crate::reconcile::Reconcile) is the pipeline for one
@@ -44,7 +44,7 @@
 //! use schemars::JsonSchema;
 //! use serde::{Deserialize, Serialize};
 //!
-//! use kubo::listener::{ControllerContext, Listener};
+//! use kubo::listener::{ListenerContext, Listener};
 //! use kubo::reconcile::{ReadyReconcile, Reconcile};
 //! use kubo::runtime::Runtime;
 //! use kubo::{environment::KubeHandle, gate::{Gate, Outcome}, state::StateKey, HasConditions, ReconcileContext, ReconcilerError};
@@ -76,7 +76,7 @@
 //! #[kubo::async_trait]
 //! impl Gate<Website> for ResolveHost {
 //!     type Error = ReconcilerError;
-//!     async fn evaluate(&self, _cx: &ReconcileContext<Website>, _ops: &KubeHandle) -> Result<Outcome<String>, Self::Error> {
+//!     async fn evaluate(&self, _cx: &ReconcileContext<Website>, _handle: &KubeHandle) -> Result<Outcome<String>, Self::Error> {
 //!         Ok(Outcome::Pass("https://example.com".into()))
 //!     }
 //! }
@@ -87,7 +87,7 @@
 //!     type Status = WebsiteStatus;
 //!     const NAME: &'static str = "website";
 //!     const FINALIZER: &'static str = "websites.example.com/cleanup";
-//!     fn reconcile<'a>(&'a self, _ctx: &'a ControllerContext, _obj: Arc<Website>, rec: Reconcile<'a, Website>)
+//!     fn reconcile<'a>(&'a self, _ctx: &'a ListenerContext, _obj: Arc<Website>, rec: Reconcile<'a, Website>)
 //!         -> ReadyReconcile<'a, Website, WebsiteStatus> {
 //!         rec.gate(ResolveHost).status(|state, _prev| WebsiteStatus {
 //!             host: state.get::<ResolveHost>().cloned(),
@@ -268,7 +268,7 @@ use kube::ResourceExt;
 
 pub use crate::environment::KubeHandle;
 use crate::{
-    environment::{EnvResource, EnvironmentError, ObjectRef},
+    environment::{EnvironmentError, NamespaceResource, ObjectRef},
     utils::ConditionContext,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
@@ -343,7 +343,7 @@ pub struct ReconcileContext<'a, K> {
 
 impl<'a, K> ReconcileContext<'a, K>
 where
-    K: EnvResource,
+    K: NamespaceResource,
 {
     /// Returns an [`ObjectRef`] for the reconciled resource: its namespace
     /// (empty when unset) and its name.

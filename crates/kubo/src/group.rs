@@ -48,7 +48,7 @@
 //!
 //! let obj = Arc::new(target);
 //!
-//! Reconcile::new(&ops, obj)
+//! Reconcile::new(&handle, obj)
 //!     .gate(ResolvePostgresDatabase { .. })
 //!     .group(
 //!         Group::new()
@@ -97,13 +97,13 @@ trait SubStep<K: Send + Sync>: Send + Sync {
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError>;
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError>;
 }
 
@@ -122,10 +122,10 @@ where
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
-        match self.gate.evaluate(cx, ops).await {
+        match self.gate.evaluate(cx, handle).await {
             Ok(Outcome::Pass(v)) => {
                 state.insert::<G>(v);
                 Ok(SubStepResult::Continue)
@@ -140,7 +140,7 @@ where
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<K>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
     }
@@ -161,10 +161,10 @@ where
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
-        match self.effect.apply(cx, ops, state).await {
+        match self.effect.apply(cx, handle, state).await {
             Ok(EffectOutcome::Done(v)) => {
                 state.insert::<F>(v);
                 Ok(SubStepResult::Continue)
@@ -179,9 +179,9 @@ where
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
-        self.effect.cleanup(cx, ops).await.map_err(Into::into)
+        self.effect.cleanup(cx, handle).await.map_err(Into::into)
     }
 }
 
@@ -199,10 +199,10 @@ where
     async fn run(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         _state: &mut State,
     ) -> Result<SubStepResult, ReconcilerError> {
-        match self.poll.check(cx, ops).await {
+        match self.poll.check(cx, handle).await {
             Ok(PollState::Done) => Ok(SubStepResult::Continue),
             Ok(
                 PollState::Pending { condition, backoff }
@@ -215,7 +215,7 @@ where
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<K>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         Ok(CleanupAction::Skip)
     }
@@ -337,13 +337,13 @@ where
     async fn apply(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
         _outer_state: &State,
     ) -> Result<EffectOutcome<V>, ReconcilerError> {
         let mut scoped_state = State::new();
 
         for step in &self.steps {
-            match step.run(cx, ops, &mut scoped_state).await? {
+            match step.run(cx, handle, &mut scoped_state).await? {
                 SubStepResult::Continue => continue,
                 SubStepResult::Wait { condition, backoff } => {
                     return Ok(EffectOutcome::Retry { condition, backoff });
@@ -367,10 +367,10 @@ where
     async fn cleanup(
         &self,
         cx: &ReconcileContext<K>,
-        ops: &KubeHandle,
+        handle: &KubeHandle,
     ) -> Result<CleanupAction, ReconcilerError> {
         for step in self.steps.iter().rev() {
-            match step.cleanup(cx, ops).await? {
+            match step.cleanup(cx, handle).await? {
                 CleanupAction::Skip | CleanupAction::Done => continue,
                 CleanupAction::Retry(backoff) => return Ok(CleanupAction::Retry(backoff)),
             }

@@ -16,7 +16,7 @@
 //! let client = kube::Client::try_default().await?;
 //! // Field manager is derived from the operator name automatically by Runtime.
 //! // To construct one manually (e.g. in integration tests):
-//! let ops = KubeHandle::new(client, "my-operator");
+//! let handle = KubeHandle::new(client, "my-operator");
 //! # Ok(())
 //! # }
 //! ```
@@ -28,7 +28,7 @@ use kube::{
 };
 use serde_json::json;
 
-use super::{ClusterEnvResource, EnvResource, EnvironmentError, ObjectRef};
+use super::{ClusterResource, EnvironmentError, NamespaceResource, ObjectRef};
 
 /// The Kubernetes operations handle — wraps a [`kube::Client`] and a
 /// field-manager name, providing every operation a reconcile pipeline needs.
@@ -100,19 +100,25 @@ impl KubeHandle {
     // ── Namespaced ────────────────────────────────────────────────────────────
 
     /// Fetch a single namespaced resource. Returns `None` if not found (404).
-    pub async fn get<T: EnvResource>(&self, r: &ObjectRef) -> Result<Option<T>, EnvironmentError> {
+    pub async fn get<T: NamespaceResource>(
+        &self,
+        r: &ObjectRef,
+    ) -> Result<Option<T>, EnvironmentError> {
         let api = Api::<T>::namespaced(self.client.clone(), &r.namespace);
         Ok(api.get_opt(&r.name).await?)
     }
 
     /// List all resources of type `T` in the given namespace.
-    pub async fn list<T: EnvResource>(&self, namespace: &str) -> Result<Vec<T>, EnvironmentError> {
+    pub async fn list<T: NamespaceResource>(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<T>, EnvironmentError> {
         let api = Api::<T>::namespaced(self.client.clone(), namespace);
         Ok(api.list(&Default::default()).await?.items)
     }
 
     /// List all resources of type `T` across all namespaces.
-    pub async fn list_all<T: EnvResource>(&self) -> Result<Vec<T>, EnvironmentError> {
+    pub async fn list_all<T: NamespaceResource>(&self) -> Result<Vec<T>, EnvironmentError> {
         let api = Api::<T>::all(self.client.clone());
         Ok(api.list(&Default::default()).await?.items)
     }
@@ -122,7 +128,7 @@ impl KubeHandle {
     /// Uses non-forced SSA: a conflict with another field owner returns `409`.
     /// Use [`KubeHandle::apply_force`] only when this controller must
     /// deliberately reclaim a field it owns from another writer.
-    pub async fn apply<T: EnvResource>(
+    pub async fn apply<T: NamespaceResource>(
         &self,
         namespace: &str,
         obj: T,
@@ -145,7 +151,7 @@ impl KubeHandle {
     /// from [`KubeHandle::apply`] so that stealing ownership is visible at the
     /// call site rather than hidden in a shared helper.  Do not use this for
     /// status — see [`KubeHandle::patch_status`].
-    pub async fn apply_force<T: EnvResource>(
+    pub async fn apply_force<T: NamespaceResource>(
         &self,
         namespace: &str,
         obj: T,
@@ -170,7 +176,7 @@ impl KubeHandle {
     /// worth surfacing as a `409`, not papering over).  Force on status is
     /// therefore not offered; if a genuine shared-ownership case ever arises it
     /// is a framework design conversation, not a per-call escape hatch.
-    pub async fn patch_status<T: EnvResource>(
+    pub async fn patch_status<T: NamespaceResource>(
         &self,
         r: &ObjectRef,
         status: serde_json::Value,
@@ -188,14 +194,17 @@ impl KubeHandle {
     }
 
     /// Delete a namespaced resource.
-    pub async fn delete<T: EnvResource>(&self, r: &ObjectRef) -> Result<(), EnvironmentError> {
+    pub async fn delete<T: NamespaceResource>(
+        &self,
+        r: &ObjectRef,
+    ) -> Result<(), EnvironmentError> {
         let api = Api::<T>::namespaced(self.client.clone(), &r.namespace);
         api.delete(&r.name, &DeleteParams::default()).await?;
         Ok(())
     }
 
     /// Replace the finalizer list on a namespaced resource (merge patch).
-    pub async fn patch_finalizers<T: EnvResource>(
+    pub async fn patch_finalizers<T: NamespaceResource>(
         &self,
         r: &ObjectRef,
         finalizers: Vec<String>,
@@ -211,7 +220,7 @@ impl KubeHandle {
     ///
     /// Sets the annotation value to `null`, which removes it regardless of
     /// which field manager owns it.
-    pub async fn remove_annotation<T: EnvResource>(
+    pub async fn remove_annotation<T: NamespaceResource>(
         &self,
         r: &ObjectRef,
         annotation_key: &str,
@@ -232,7 +241,7 @@ impl KubeHandle {
     // ── Cluster-scoped ────────────────────────────────────────────────────────
 
     /// Fetch a single cluster-scoped resource by name. Returns `None` if not found.
-    pub async fn get_cluster<T: ClusterEnvResource>(
+    pub async fn get_cluster<T: ClusterResource>(
         &self,
         name: &str,
     ) -> Result<Option<T>, EnvironmentError> {
@@ -245,10 +254,7 @@ impl KubeHandle {
     /// Uses non-forced SSA; see [`KubeHandle::apply`].  Use
     /// [`KubeHandle::apply_cluster_force`] only when deliberately reclaiming a
     /// field from another writer.
-    pub async fn apply_cluster<T: ClusterEnvResource>(
-        &self,
-        obj: T,
-    ) -> Result<(), EnvironmentError> {
+    pub async fn apply_cluster<T: ClusterResource>(&self, obj: T) -> Result<(), EnvironmentError> {
         let api = Api::<T>::all(self.client.clone());
         let params = self.ssa_params();
         let name = obj.meta().name.clone().ok_or_else(|| {
@@ -262,7 +268,7 @@ impl KubeHandle {
     ///
     /// Cluster-scoped counterpart of [`KubeHandle::apply_force`]; see that
     /// method for why force is an explicit opt-in.
-    pub async fn apply_cluster_force<T: ClusterEnvResource>(
+    pub async fn apply_cluster_force<T: ClusterResource>(
         &self,
         obj: T,
     ) -> Result<(), EnvironmentError> {
@@ -276,7 +282,7 @@ impl KubeHandle {
     }
 
     /// Delete a cluster-scoped resource by name.
-    pub async fn delete_cluster<T: ClusterEnvResource>(
+    pub async fn delete_cluster<T: ClusterResource>(
         &self,
         name: &str,
     ) -> Result<(), EnvironmentError> {

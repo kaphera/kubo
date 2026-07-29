@@ -42,7 +42,7 @@ use tower::Service;
 //
 // The typed CRD the framework-level harness drives a real `Reconcile::execute`
 // against.  Raw-HTTP scenarios operate on the same object as opaque JSON; the
-// `RunReconcile` step needs a concrete `EnvResource + HasConditions` type to
+// `RunReconcile` step needs a concrete `NamespaceResource + HasConditions` type to
 // satisfy `Reconcile<'r, R>`'s bounds.
 //
 // The status is `ResourceStatus<ConformanceFields>` so the framework owns
@@ -1733,7 +1733,7 @@ async fn run_reconcile_pass(
     object_name: &str,
     pipeline: &RunReconcilePipeline,
 ) -> TraceEntry {
-    let ops = kubo::environment::KubeHandle::new(client.clone(), field_manager);
+    let handle = kubo::environment::KubeHandle::new(client.clone(), field_manager);
     let obj: Arc<ConformanceObject> = Arc::new(
         kube::Api::namespaced(client.clone(), "default")
             .get(object_name)
@@ -1742,7 +1742,7 @@ async fn run_reconcile_pass(
                 panic!("conformance: RunReconcile: object {object_name} not found — apply it first")
             }),
     );
-    let rec = pipeline(&ops, obj);
+    let rec = pipeline(&handle, obj);
     match rec.execute(finalizer).await {
         Ok(_) => make_entry(200, None),
         Err(e) => reconcile_error_trace(&e),

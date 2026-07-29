@@ -88,7 +88,7 @@ impl Gate<LedgerResource> for WaitOnceGate {
     async fn evaluate(
         &self,
         cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<Outcome<()>, Self::Error> {
         if self.pass.load(Ordering::Relaxed) {
             Ok(Outcome::Pass(()))
@@ -122,7 +122,7 @@ impl Effect<LedgerResource> for EffectA {
     async fn apply(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         Ok(EffectOutcome::Done(()))
@@ -131,7 +131,7 @@ impl Effect<LedgerResource> for EffectA {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         self.cleaned_up.fetch_add(1, Ordering::Relaxed);
         Ok(CleanupAction::Done)
@@ -153,7 +153,7 @@ impl Effect<LedgerResource> for EffectB {
     async fn apply(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         Ok(EffectOutcome::Done(()))
@@ -162,7 +162,7 @@ impl Effect<LedgerResource> for EffectB {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         self.cleaned_up.fetch_add(1, Ordering::Relaxed);
         Ok(CleanupAction::Done)
@@ -188,7 +188,7 @@ impl Effect<LedgerResource> for PinnedNameEffect {
     async fn apply(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         Ok(EffectOutcome::Done(()))
@@ -197,7 +197,7 @@ impl Effect<LedgerResource> for PinnedNameEffect {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         self.cleaned_up.fetch_add(1, Ordering::Relaxed);
         Ok(CleanupAction::Done)
@@ -227,7 +227,7 @@ impl Effect<LedgerResource> for RetryOnceEffect {
     async fn apply(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
         _state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
         Ok(EffectOutcome::Done(()))
@@ -236,7 +236,7 @@ impl Effect<LedgerResource> for RetryOnceEffect {
     async fn cleanup(
         &self,
         _cx: &ReconcileContext<LedgerResource>,
-        _ops: &KubeHandle,
+        _handle: &KubeHandle,
     ) -> Result<CleanupAction, Self::Error> {
         let n = self.attempts.fetch_add(1, Ordering::Relaxed);
         if n == 0 {
@@ -265,7 +265,7 @@ fn make_obj(ns: &str, name: &str, deleting: bool) -> Arc<LedgerResource> {
     Arc::new(r)
 }
 
-fn ops_for(world: &World) -> KubeHandle {
+fn handle_for(world: &World) -> KubeHandle {
     KubeHandle::new(world.client().clone(), "kubo-test")
 }
 
@@ -292,12 +292,12 @@ async fn apply_populates_ledger_and_cleanup_empties_it() {
     let world = World::builder().build().await;
     let obj = make_obj("ns", "obj", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let a = Arc::new(AtomicUsize::new(0));
     let b = Arc::new(AtomicUsize::new(0));
 
-    Reconcile::new(&ops, obj)
+    Reconcile::new(&handle, obj)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -318,7 +318,7 @@ async fn apply_populates_ledger_and_cleanup_empties_it() {
     // Delete and run cleanup.
     world.delete::<LedgerResource>("ns", "obj").await;
     let deleting = Arc::new(world.get::<LedgerResource>("ns", "obj").unwrap());
-    Reconcile::new(&ops, deleting)
+    Reconcile::new(&handle, deleting)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -354,14 +354,14 @@ async fn gate_wait_then_delete_runs_no_cleanup() {
     let world = World::builder().build().await;
     let obj = make_obj("ns", "obj", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let pass = Arc::new(AtomicBool::new(false));
     let a = Arc::new(AtomicUsize::new(0));
     let b = Arc::new(AtomicUsize::new(0));
 
     // Apply pass: gate waits, so neither effect runs.
-    let action = Reconcile::new(&ops, obj)
+    let action = Reconcile::new(&handle, obj)
         .gate(WaitOnceGate { pass: pass.clone() })
         .effect(EffectA {
             cleaned_up: a.clone(),
@@ -390,7 +390,7 @@ async fn gate_wait_then_delete_runs_no_cleanup() {
     // the fake tombstones the object.
     world.delete::<LedgerResource>("ns", "obj").await;
     let deleting = Arc::new(world.get::<LedgerResource>("ns", "obj").unwrap());
-    Reconcile::new(&ops, deleting)
+    Reconcile::new(&handle, deleting)
         .gate(WaitOnceGate { pass: pass.clone() })
         .effect(EffectA {
             cleaned_up: a.clone(),
@@ -424,14 +424,14 @@ async fn partial_apply_records_only_completed_effects() {
     let world = World::builder().build().await;
     let obj = make_obj("ns", "obj", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let second_pass = Arc::new(AtomicBool::new(false));
     let a = Arc::new(AtomicUsize::new(0));
     let b = Arc::new(AtomicUsize::new(0));
 
     // Apply: EffectA runs, then a second gate waits, so EffectB never runs.
-    let action = Reconcile::new(&ops, obj)
+    let action = Reconcile::new(&handle, obj)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -455,7 +455,7 @@ async fn partial_apply_records_only_completed_effects() {
     // Delete and run cleanup.
     world.delete::<LedgerResource>("ns", "obj").await;
     let deleting = Arc::new(world.get::<LedgerResource>("ns", "obj").unwrap());
-    Reconcile::new(&ops, deleting)
+    Reconcile::new(&handle, deleting)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -487,14 +487,14 @@ async fn cleanup_retry_persists_ledger_and_resumes() {
     let world = World::builder().build().await;
     let obj = make_obj("ns", "obj", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let a = Arc::new(AtomicUsize::new(0));
     let retry_attempts = Arc::new(AtomicUsize::new(0));
     let retry_cleaned = Arc::new(AtomicUsize::new(0));
 
     // Apply: EffectA then RetryOnceEffect both complete.
-    Reconcile::new(&ops, obj)
+    Reconcile::new(&handle, obj)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -517,7 +517,7 @@ async fn cleanup_retry_persists_ledger_and_resumes() {
 
     // First cleanup pass: RetryOnceEffect retries (returns Retry), so its
     // ledger entry persists. EffectA (later in reverse order) is not reached.
-    let action = Reconcile::new(&ops, deleting.clone())
+    let action = Reconcile::new(&handle, deleting.clone())
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -559,7 +559,7 @@ async fn cleanup_retry_persists_ledger_and_resumes() {
 
     // Second cleanup pass: RetryOnceEffect succeeds, then EffectA runs.
     let deleting2 = Arc::new(world.get::<LedgerResource>("ns", "obj").unwrap());
-    Reconcile::new(&ops, deleting2)
+    Reconcile::new(&handle, deleting2)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -612,11 +612,11 @@ async fn orphaned_ledger_entry_is_dropped() {
     });
     world.prefill(obj);
 
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
     let a = Arc::new(AtomicUsize::new(0));
 
     let deleting = Arc::new(world.get::<LedgerResource>("ns", "obj").unwrap());
-    let action = Reconcile::new(&ops, deleting)
+    let action = Reconcile::new(&handle, deleting)
         .effect(EffectA {
             cleaned_up: a.clone(),
         })
@@ -654,11 +654,11 @@ async fn effect_name_override_pins_stable_ledger_key() {
     let world = World::builder().build().await;
     let obj = make_obj("ns", "obj", false);
     world.prefill((*obj).clone());
-    let ops = ops_for(&world);
+    let handle = handle_for(&world);
 
     let a = Arc::new(AtomicUsize::new(0));
 
-    Reconcile::new(&ops, obj)
+    Reconcile::new(&handle, obj)
         .effect(PinnedNameEffect {
             cleaned_up: a.clone(),
         })

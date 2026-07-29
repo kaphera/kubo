@@ -39,9 +39,9 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     HasConditions,
-    environment::EnvResource,
+    environment::NamespaceResource,
     extensions::Extensions,
-    listener::{ControllerContext, Listener},
+    listener::{Listener, ListenerContext},
     reconcile::Reconcile,
     testing::Op,
 };
@@ -97,7 +97,7 @@ type ListenerFn = Box<dyn FnOnce(kube::Client) -> tokio::task::AbortHandle + Sen
 /// actually need it.
 pub trait ListenerResource {
     /// The resource kind the listener reconciles.
-    type Resource: EnvResource + HasConditions + Debug;
+    type Resource: NamespaceResource + HasConditions + Debug;
 }
 
 // ── World ─────────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ impl World {
     ///
     /// The name `prefill` distinguishes this from [`World::seed`] (which
     /// returns the numeric RNG seed).
-    pub fn prefill<T: EnvResource>(&self, obj: T) -> &Self {
+    pub fn prefill<T: NamespaceResource>(&self, obj: T) -> &Self {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
         let resource = T::plural(&()).into_owned();
@@ -208,7 +208,7 @@ impl World {
     ///
     /// Returns `None` if the object does not exist.  For HTTP-level reads,
     /// construct an `Api<T>` via [`World::client`] instead.
-    pub fn get<T: EnvResource>(&self, ns: &str, name: &str) -> Option<T> {
+    pub fn get<T: NamespaceResource>(&self, ns: &str, name: &str) -> Option<T> {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
         let resource = T::plural(&()).into_owned();
@@ -219,7 +219,7 @@ impl World {
     }
 
     /// Returns `true` if the named object exists in the fake's store.
-    pub fn has<T: EnvResource>(&self, ns: &str, name: &str) -> bool {
+    pub fn has<T: NamespaceResource>(&self, ns: &str, name: &str) -> bool {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
         let resource = T::plural(&()).into_owned();
@@ -233,7 +233,7 @@ impl World {
     ///
     /// Reads directly from the fake's store so it reflects the latest status
     /// patch without needing a round-trip through the kube client.
-    pub fn condition<T: EnvResource>(&self, ns: &str, name: &str, type_: &str) -> bool {
+    pub fn condition<T: NamespaceResource>(&self, ns: &str, name: &str, type_: &str) -> bool {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
         let resource = T::plural(&()).into_owned();
@@ -275,7 +275,7 @@ impl World {
     ///
     /// Uses `PatchParams::apply("kubo-test")` (SSA field manager).  Returns
     /// the stored object with its injected `resourceVersion`.
-    pub async fn create<T: EnvResource>(&self, obj: T) -> T {
+    pub async fn create<T: NamespaceResource>(&self, obj: T) -> T {
         let ns = obj
             .meta()
             .namespace
@@ -292,7 +292,7 @@ impl World {
     ///
     /// Uses default delete options (no grace period override).  If the object
     /// has finalizers the fake will tombstone it rather than remove it.
-    pub async fn delete<T: EnvResource>(&self, ns: &str, name: &str) {
+    pub async fn delete<T: NamespaceResource>(&self, ns: &str, name: &str) {
         let api: Api<T> = Api::namespaced(self.client.clone(), ns);
         api.delete(name, &Default::default())
             .await
@@ -456,14 +456,14 @@ impl World {
     /// client or a token cache.
     pub fn seed_listener<R, L>(&self, listener: L)
     where
-        R: EnvResource + HasConditions + Debug + 'static,
+        R: NamespaceResource + HasConditions + Debug + 'static,
         L: Listener<R> + 'static,
     {
         self.seed_listener_with_extensions::<R, L>(listener, Extensions::new());
     }
 
     /// Like [`seed_listener`](Self::seed_listener) but seeds the
-    /// [`ControllerContext`] extensions with caller-supplied values before
+    /// [`ListenerContext`] extensions with caller-supplied values before
     /// spawning the controller loop.
     ///
     /// The `kube::Client` is always inserted automatically, replacing any
@@ -480,7 +480,7 @@ impl World {
     /// ```
     pub fn seed_listener_with_extensions<R, L>(&self, listener: L, extensions: Extensions)
     where
-        R: EnvResource + HasConditions + Debug + 'static,
+        R: NamespaceResource + HasConditions + Debug + 'static,
         L: Listener<R> + 'static,
     {
         let handle = spawn_listener_task::<R, L>(self.client.clone(), listener, extensions);
@@ -513,7 +513,7 @@ impl World {
     ///
     /// Includes tombstoned objects (those with `deletionTimestamp` set) — use
     /// [`is_deleted`](Self::is_deleted) to distinguish live from pending-delete.
-    pub fn list_refs<T: EnvResource>(&self) -> Vec<ObjRef> {
+    pub fn list_refs<T: NamespaceResource>(&self) -> Vec<ObjRef> {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
         let resource = T::plural(&()).into_owned();
@@ -530,7 +530,7 @@ impl World {
     /// Returns `false` if the object is live, or if it has been fully removed
     /// from the store (in which case [`list_refs`](Self::list_refs) would not
     /// have included it).
-    pub fn is_deleted<T: EnvResource>(&self, obj_ref: &ObjRef) -> bool {
+    pub fn is_deleted<T: NamespaceResource>(&self, obj_ref: &ObjRef) -> bool {
         let group = T::group(&()).into_owned();
         let version = T::version(&()).into_owned();
         let resource = T::plural(&()).into_owned();
@@ -571,7 +571,7 @@ impl World {
     /// [`advance`](Self::advance) when watch fuzzing is enabled). Use it
     /// when the test drives reconciles explicitly rather than relying on
     /// the controller watcher.
-    pub fn seed_obj<T: EnvResource>(&self, obj: T) -> ObjRef {
+    pub fn seed_obj<T: NamespaceResource>(&self, obj: T) -> ObjRef {
         let ns = obj
             .meta()
             .namespace
@@ -594,7 +594,7 @@ impl World {
     /// exercise reconcile logic correctness across generated inputs.
     ///
     /// The listener is instantiated via `Default` so it must be stateless (or
-    /// carry only configuration injected through the `ControllerContext`
+    /// carry only configuration injected through the `ListenerContext`
     /// extensions, which this method does not populate beyond the kube client).
     ///
     /// # Panics
@@ -614,14 +614,14 @@ impl World {
             });
 
         let obj = Arc::new(obj);
-        let ops = Arc::new(KubeHandle::new(self.client.clone(), L::NAME));
+        let handle = Arc::new(KubeHandle::new(self.client.clone(), L::NAME));
         let mut extensions = Extensions::new();
         extensions.insert(self.client.clone());
         let extensions = Arc::new(extensions);
-        let ctx = Arc::new(ControllerContext::new(ops, extensions));
+        let ctx = Arc::new(ListenerContext::new(handle, extensions));
 
         let listener = L::default();
-        let rec = Reconcile::new(ctx.ops(), obj.clone());
+        let rec = Reconcile::new(ctx.handle(), obj.clone());
         listener
             .reconcile(&ctx, obj, rec)
             .execute(L::FINALIZER)
@@ -635,7 +635,7 @@ impl World {
     /// sequences do not abort the test.
     pub async fn apply_op<T>(&self, op: Op<T>)
     where
-        T: EnvResource,
+        T: NamespaceResource,
     {
         match op {
             Op::Create(obj) => {
@@ -666,7 +666,7 @@ fn spawn_listener_task<R, L>(
     mut extensions: Extensions,
 ) -> tokio::task::AbortHandle
 where
-    R: EnvResource + HasConditions + Debug + 'static,
+    R: NamespaceResource + HasConditions + Debug + 'static,
     L: Listener<R> + 'static,
 {
     let listener = Arc::new(listener);
@@ -674,10 +674,10 @@ where
         // Build a KubeHandle and populate extensions.  The kube::Client is
         // always inserted so listeners can call ctx.require::<kube::Client>();
         // any caller-supplied entries are preserved underneath it.
-        let ops = Arc::new(KubeHandle::new(client.clone(), L::NAME));
+        let handle = Arc::new(KubeHandle::new(client.clone(), L::NAME));
         extensions.insert(client.clone());
         let extensions = Arc::new(extensions);
-        let ctrl_ctx = Arc::new(ControllerContext::new(ops, extensions));
+        let ctrl_ctx = Arc::new(ListenerContext::new(handle, extensions));
 
         // Wire up the kube-rs Controller watcher for this resource kind.
         let api = Api::<R>::all(client);
@@ -688,10 +688,10 @@ where
             .run(
                 {
                     let listener = Arc::clone(&listener);
-                    move |obj: Arc<R>, ctx: Arc<ControllerContext>| {
+                    move |obj: Arc<R>, ctx: Arc<ListenerContext>| {
                         let listener = Arc::clone(&listener);
                         async move {
-                            let rec = Reconcile::new(ctx.ops(), obj.clone());
+                            let rec = Reconcile::new(ctx.handle(), obj.clone());
                             listener
                                 .reconcile(&ctx, obj, rec)
                                 .execute(L::FINALIZER)
@@ -699,7 +699,7 @@ where
                         }
                     }
                 },
-                |_obj, _err, _ctx: Arc<ControllerContext>| Action::requeue(Duration::from_secs(5)),
+                |_obj, _err, _ctx: Arc<ListenerContext>| Action::requeue(Duration::from_secs(5)),
                 ctrl_ctx,
             )
             .for_each(|res| async move {
@@ -757,19 +757,19 @@ impl WorldBuilder {
     /// the listener pulls values from `ctx.require`.
     pub fn listener<R, L>(self, listener: L) -> Self
     where
-        R: EnvResource + HasConditions + Debug + 'static,
+        R: NamespaceResource + HasConditions + Debug + 'static,
         L: Listener<R> + 'static,
     {
         self.listener_with_extensions::<R, L>(listener, Extensions::new())
     }
 
-    /// Like [`listener`](Self::listener) but seeds the [`ControllerContext`]
+    /// Like [`listener`](Self::listener) but seeds the [`ListenerContext`]
     /// extensions with caller-supplied values.
     ///
     /// The `kube::Client` is always inserted automatically.
     pub fn listener_with_extensions<R, L>(mut self, listener: L, extensions: Extensions) -> Self
     where
-        R: EnvResource + HasConditions + Debug + 'static,
+        R: NamespaceResource + HasConditions + Debug + 'static,
         L: Listener<R> + 'static,
     {
         let factory: ListenerFn = Box::new(move |client: kube::Client| {
