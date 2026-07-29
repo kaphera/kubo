@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[package.metadata.docs.rs]
+features = ["test-support"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints]
 workspace = true
 

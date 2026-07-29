@@ -1,119 +1,233 @@
-//! A complete, opinionated framework for building Kubernetes operators in Rust.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+//! A framework for building Kubernetes operators in Rust on top of [`kube`].
 //!
-//! Kubo eliminates the boilerplate of writing reconcile loops by modelling
-//! controllers as sequential pipelines of composable steps. You declare what
-//! your controller does — resolve dependencies, create resources, wait for
-//! readiness — and the framework handles finalizer lifecycle, status patching,
-//! backoff, and cleanup ordering. The top-level [`Runtime`](runtime::Runtime)
-//! manages leader election and OS signal handling so you never wire that up
-//! yourself.
+//! Controllers are modelled as sequential pipelines of typed steps. The
+//! framework takes over the finalizer lifecycle, status patching, requeue
+//! backoff, reverse-order cleanup, and leader election. Client machinery, CRD
+//! types, and watches remain kube's: [`Listener::controller`](crate::listener::Listener::controller)
+//! receives kube's `kube::runtime::Controller` and may decorate it before it
+//! runs. kubo does not replace kube's client or API machinery.
 //!
-//! # Architecture
+//! # Overview
 //!
-//! Kubo is structured in three layers, each with a single responsibility:
+//! Three layers make up a controller:
 //!
-//! ```text
-//! Runtime  — leader election, signal handling, wiring listeners together
-//!   └─ Listener  — declares one controller: which CRD to watch + how to reconcile it
-//!        └─ Reconcile  — the step pipeline for a single reconcile pass
-//! ```
+//! - [`Runtime`](crate::runtime::Runtime) collects listeners, elects leadership
+//!   over a Coordination v1 `Lease`, installs SIGTERM/SIGINT handling, and
+//!   drains controllers on leadership loss or shutdown.
+//! - [`Listener`](crate::listener::Listener) declares one controller: the
+//!   resource kind it watches and the pipeline built in
+//!   [`Listener::reconcile`](crate::listener::Listener::reconcile). Both methods
+//!   receive a [`ControllerContext`](crate::listener::ControllerContext), the
+//!   per-leadership-term context holding the [`KubeHandle`]
+//!   and the extensions map.
+//! - [`Reconcile`](crate::reconcile::Reconcile) is the pipeline for one
+//!   reconcile pass; [`ReadyReconcile::execute`](crate::reconcile::ReadyReconcile::execute)
+//!   runs it with finalizer management.
 //!
-//! [`Runtime`](runtime::Runtime) is the entry point. You register one
-//! [`Listener`](listener::Listener) per CRD kind, and the runtime drives them
-//! all. Each `Listener` owns exactly one reconcile definition, keeping
-//! controllers isolated from each other.
+//! A pipeline is a sequence of steps of four kinds:
 //!
-//! # Core Concepts
+//! | Step | Registered via | Behaviour |
+//! |------|----------------|-----------|
+//! | Gate | [`Gate`](crate::gate::Gate) | read-only dependency check; passes a value or waits |
+//! | Guard | [`Reconcile::guard`](crate::reconcile::Reconcile::guard) | a gate whose output is discarded |
+//! | Effect | [`Effect`](crate::effect::Effect) | write step; owns its cleanup |
+//! | Poll | [`Poll`](crate::poll::Poll) | read-only convergence check, typically placed after effects |
 //!
-//! A reconcile pipeline is a sequence of typed steps that run top-to-bottom on
-//! every reconcile pass. Each step is one of four kinds:
+//! # Quick start
 //!
-//! | Step kind | Trait    | Purpose                                      | Produces state? | Has cleanup? |
-//! |-----------|----------|----------------------------------------------|-----------------|--------------|
-//! | Gate      | [`Gate`](gate::Gate) | Read-only check; blocks pipeline until ready | Yes             | No           |
-//! | Guard     | [`Gate`](gate::Gate) | Read-only check; output discarded            | No              | No           |
-//! | Effect    | [`Effect`](effect::Effect) | Write operation; creates/updates resources | Yes             | Yes (reverse order) |
-//! | Poll      | [`Poll`](poll::Poll) | Read-only observation; waits for convergence | No              | No           |
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+//! use kube::{Client, CustomResource};
+//! use schemars::JsonSchema;
+//! use serde::{Deserialize, Serialize};
 //!
-//! Gates and effects produce typed values that flow downstream through a
-//! [`State`](state::State) bag. Each step declares its output type via the
-//! [`StateKey`](state::StateKey) trait. Downstream steps retrieve values
-//! with `state.require::<UpstreamStep>()`.
-//!
-//! Status is managed automatically. Wrap your custom status struct in
-//! [`ResourceStatus<T>`](status::ResourceStatus) and Kubo will track
-//! conditions and `observedGeneration` for you — no manual bookkeeping needed.
-//!
-//! # Pipeline Lifecycle
-//!
-//! On **apply** (no deletion timestamp), the framework:
-//! 1. Ensures the finalizer is present on the object.
-//! 2. Runs each step in declaration order.
-//! 3. After each step, evaluates the status closure and patches status if changed.
-//! 4. If a step returns `Wait`, patches the condition and requeues with backoff.
-//! 5. As each effect completes (`EffectOutcome::Done`), records the effect's identity in `ResourceStatus<T>::pending_cleanup` — a framework-owned ledger of effects that have applied but not yet been torn down.
-//! 6. If all steps pass, sets `Ready=True` and requeues at the steady-state interval.
-//!
-//! On **cleanup** (deletion timestamp present, finalizer found), the framework:
-//! 1. Runs effect `cleanup` methods in reverse declaration order, **filtered by the `pendingCleanup` ledger** — cleanup only runs for effects that actually completed `apply`.
-//! 2. Strikes each effect off the ledger after its cleanup succeeds and patches the shrunk ledger back to status, giving resumability: a `Retry` resumes from the failed effect and skips effects already cleaned up.
-//! 3. If any cleanup returns `Retry`, requeues with backoff and **keeps the finalizer** so the object survives for the next pass.
-//! 4. Removes the finalizer only after all cleanups succeed. Ledger entries that match no registered cleanup step (e.g. after an effect rename or removal) are logged and dropped — blocking deletion forever on absent code is worse than leaking the orphaned resource.
-//!
-//! The ledger keys on the effect's Rust type name by default; override [`Effect::effect_name`](effect::Effect::effect_name) to pin a stable, release-independent key for effects whose `cleanup` must not leak on rename.
-//!
-//! # Testability
-//!
-//! All Kubernetes interactions go through [`KubeHandle`],
-//! which wraps a `kube::Client`. In tests, construct a `KubeHandle` from the
-//! client provided by `kubo::testing::World` — which points at a
-//! `kubo_test_fakeapi::FakeApiServer` — and run the same
-//! production code paths without a real cluster. Enable the `test-support`
-//! feature to access the `testing` module, the `World` simulation API, and
-//! the `#[kubo::test]` / `#[kubo::property_test]` macros.
-//!
-//! # Quick Example
-//!
-//! ```ignore
-//! use kubo::runtime::Runtime;
-//! use kubo::listener::{Listener, ControllerContext};
+//! use kubo::listener::{ControllerContext, Listener};
 //! use kubo::reconcile::{ReadyReconcile, Reconcile};
-//! use kubo::environment::KubeHandle;
+//! use kubo::runtime::Runtime;
+//! use kubo::{environment::KubeHandle, gate::{Gate, Outcome}, state::StateKey, HasConditions, ReconcileContext, ReconcilerError};
 //!
-//! async fn main() {
-//!     Runtime::new("my-operator", client)
-//!         .with(reqwest::Client::new())
-//!         .listener(DatabaseListener)
-//!         .run()
-//!         .await
+//! #[derive(CustomResource, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+//! #[kube(group = "example.com", version = "v1", kind = "Website", status = "WebsiteStatus", namespaced)]
+//! struct WebsiteSpec {
+//!     host: String,
 //! }
 //!
-//! // One struct per controller:
-//! pub struct DatabaseListener;
+//! #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+//! struct WebsiteStatus {
+//!     host: Option<String>,
+//!     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+//!     conditions: Vec<Condition>,
+//! }
 //!
-//! impl Listener<Database> for DatabaseListener {
-//!     type Status = DatabaseStatus;
-//!
-//!     const NAME: &'static str = "database";
-//!     const FINALIZER: &'static str = "databases.example.com/cleanup";
-//!
-//!     fn reconcile<'a>(
-//!         &'a self,
-//!         ctx: &'a ControllerContext,
-//!         obj: Arc<Database>,
-//!         rec: Reconcile<'a, Database>,
-//!     ) -> ReadyReconcile<'a, Database, DatabaseStatus> {
-//!         rec.ready_reason("Provisioned", "Database and credentials ready")
-//!            .gate(ResolveUpstream { .. })
-//!            .effect(CreateDatabase { .. })
-//!            .effect(CreateCredentialSecret { .. })
-//!            .poll(WaitForReady { .. })
-//!            .status(|state, _prev| DatabaseStatus {
-//!                connection_url: state.get::<CreateDatabase>().cloned(),
-//!            })
+//! impl HasConditions for Website {
+//!     fn conditions(&self) -> Vec<Condition> {
+//!         self.status.as_ref().map(|s| s.conditions.clone()).unwrap_or_default()
 //!     }
 //! }
+//!
+//! struct ResolveHost;
+//! impl StateKey for ResolveHost {
+//!     type Value = String;
+//! }
+//!
+//! #[kubo::async_trait]
+//! impl Gate<Website> for ResolveHost {
+//!     type Error = ReconcilerError;
+//!     async fn evaluate(&self, _cx: &ReconcileContext<Website>, _ops: &KubeHandle) -> Result<Outcome<String>, Self::Error> {
+//!         Ok(Outcome::Pass("https://example.com".into()))
+//!     }
+//! }
+//!
+//! struct WebsiteListener;
+//!
+//! impl Listener<Website> for WebsiteListener {
+//!     type Status = WebsiteStatus;
+//!     const NAME: &'static str = "website";
+//!     const FINALIZER: &'static str = "websites.example.com/cleanup";
+//!     fn reconcile<'a>(&'a self, _ctx: &'a ControllerContext, _obj: Arc<Website>, rec: Reconcile<'a, Website>)
+//!         -> ReadyReconcile<'a, Website, WebsiteStatus> {
+//!         rec.gate(ResolveHost).status(|state, _prev| WebsiteStatus {
+//!             host: state.get::<ResolveHost>().cloned(),
+//!             conditions: vec![],
+//!         })
+//!     }
+//! }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! #     tokio::runtime::Runtime::new()?.block_on(async {
+//! #         let client = Client::try_default().await?;
+//! Runtime::new("website-operator", client)
+//!     .listener(WebsiteListener)
+//!     .run()
+//!     .await?;
+//! #         Ok(())
+//! #     })
+//! # }
 //! ```
+//!
+//! Running the example requires a Kubernetes cluster reachable through the
+//! default kubeconfig and the `Website` CRD installed.
+//!
+//! # Core concepts
+//!
+//! ## Gates
+//!
+//! A gate answers one question: is an upstream dependency ready?
+//! [`Gate::evaluate`](crate::gate::Gate::evaluate) returns
+//! [`Outcome::Pass`](crate::gate::Outcome::Pass) with a value that enters the
+//! state bag, or [`Outcome::Wait`](crate::gate::Outcome::Wait) with a condition
+//! and a backoff; the framework patches the condition and requeues.
+//!
+//! ## Effects
+//!
+//! Effects are the only steps that mutate external state, and the only ones
+//! with a cleanup obligation. [`Effect::apply`](crate::effect::Effect::apply)
+//! returns [`EffectOutcome::Done`](crate::effect::EffectOutcome::Done) or
+//! requests a retry; [`Effect::cleanup`](crate::effect::Effect::cleanup)
+//! defaults to [`CleanupAction::Skip`](crate::cleanup::CleanupAction::Skip)
+//! for effects that rely on owner-reference garbage collection. The cleanup
+//! ledger keys on the effect's Rust type name unless
+//! [`Effect::effect_name`](crate::effect::Effect::effect_name) pins a stable,
+//! release-independent name.
+//!
+//! ## Polls
+//!
+//! A poll observes state this controller created and blocks the pipeline until
+//! convergence. [`Poll::check`](crate::poll::Poll::check) returns
+//! [`PollState::Done`](crate::poll::PollState::Done), `Pending`, or `Failed`;
+//! the latter two patch a condition and requeue, and polls produce no state
+//! values.
+//!
+//! ## State
+//!
+//! Steps communicate through the [`State`](crate::state::State) bag and
+//! nothing else. Gates and effects declare their output type via
+//! [`StateKey`](crate::state::StateKey); downstream steps read it with
+//! [`State::get`](crate::state::State::get) or
+//! [`State::require`](crate::state::State::require), which fails with a
+//! descriptive error when a step is mis-ordered.
+//!
+//! ## Groups
+//!
+//! [`Group`](crate::group::Group) composes several steps into a sub-pipeline
+//! with a scoped state bag; only the reducer's output is published to the
+//! outer pipeline. A sub-step wait propagates as a single effect retry, and
+//! cleanup runs the group's effects in reverse order at the group's position.
+//!
+//! ## Status
+//!
+//! The framework wraps the listener's `Status` type in
+//! [`ResourceStatus`](crate::status::ResourceStatus), maintaining `conditions`,
+//! `observedGeneration`, and the `pendingCleanup` ledger alongside the
+//! flattened domain fields, and patches status after each step only when
+//! something changed. Conditions are built through a generation-scoped
+//! [`ConditionContext`].
+//!
+//! **The CRD schema must declare the framework-managed status fields.**
+//! Kubernetes structural-schema pruning silently strips status fields the CRD
+//! does not declare — a stale schema makes the API server drop `pendingCleanup`
+//! on every patch, and the framework then sees an empty ledger.
+//!
+//! ## Finalizers and cleanup
+//!
+//! On apply, the framework ensures the finalizer is present and records each
+//! completed effect in the `pendingCleanup` ledger. On deletion, it runs
+//! effect cleanups in reverse declaration order filtered by the ledger,
+//! strikes entries off as they succeed, and removes the finalizer only when
+//! the ledger is empty; a cleanup that retries keeps the finalizer and
+//! requeues with backoff. Ledger entries matching no registered step are
+//! logged and dropped. The full lifecycle is documented on
+//! [`Reconcile`](crate::reconcile).
+//!
+//! ## Backoff
+//!
+//! Steps that wait carry a [`Backoff`](crate::backoff::Backoff) strategy.
+//! [`Fixed`](crate::backoff::fixed::Fixed) requeues at a constant interval;
+//! [`Exponential`](crate::backoff::exponential::Exponential) escalates from
+//! the condition's `last_transition_time`, so the wait grows with
+//! time-in-state rather than with retry count.
+//!
+//! # Testing
+//!
+//! The `test-support` feature enables the `testing` module. `World` is an
+//! in-memory cluster backed by `kubo_test_fakeapi::FakeApiServer` with a real
+//! `kube::Client` in front of it, so pipelines exercise the same code paths
+//! as production. Time is paused and the world's RNG is seeded, so
+//! runs are reproducible: set `SEED` to replay one run, `ITERATIONS` to run
+//! across seeds (when both are set, `SEED` takes precedence and a single run
+//! executes), or pin seeds with the `seed`/`seeds` attribute options. The
+//! `#[kubo::test]` macro wraps a test in paused-time tokio, builds a `World`
+//! for each `&mut World` parameter, and prints the replay seed to stderr on
+//! failure; `#[kubo::property_test]` additionally draws parameters from
+//! proptest strategies. `World::fault` injects faults (conflict, not-found,
+//! internal, throttled, latency, disconnect) into mutable operations; random
+//! triggering is drawn from the world's seeded RNG.
+//!
+//! # Feature flags
+//!
+//! - `test-support` — enables the `testing` module, the `#[kubo::test]` and
+//!   `#[kubo::property_test]` macros, and the `kubo-test-fakeapi`,
+//!   `kubo-test-macros`, and `proptest` dependencies, and turns on the
+//!   `kube/client`, `kube/derive`, `tokio/test-util`, and `tokio/time`
+//!   sub-features. The default feature set is empty.
+//!
+//! # Stability and compatibility
+//!
+//! The workspace manifest declares `rust-version = "1.95"` and dependencies on
+//! kube 3.1.0 and k8s-openapi 0.27 (built with its `latest` API-version
+//! feature). No compatibility policy is declared beyond these manifest values.
+//!
+//! # Links
+//!
+//! - Repository: <https://github.com/kaphera/kubo>
+//! - `CONFORMANCE.md`, the registry of known divergences between the fake API
+//!   server and a real kube-apiserver, machine-checked by the
+//!   `kubo-conformance` crate:
+//!   <https://github.com/kaphera/kubo/blob/main/CONFORMANCE.md>
+//! - kube documentation: <https://kube.rs>
 
 pub mod environment;
 pub mod utils;
@@ -136,12 +250,15 @@ pub mod listener;
 pub mod runtime;
 
 #[cfg(feature = "test-support")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-support")))]
 pub mod testing;
 
 #[cfg(feature = "test-support")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-support")))]
 pub use kubo_test_macros::test;
 
 #[cfg(feature = "test-support")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-support")))]
 pub use kubo_test_macros::property_test;
 
 pub use async_trait::async_trait;

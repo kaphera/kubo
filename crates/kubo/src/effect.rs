@@ -135,7 +135,7 @@ pub trait Effect<K: Send + Sync = ()>: StateKey {
         state: &State,
     ) -> Result<EffectOutcome<<Self as StateKey>::Value>, Self::Error>;
 
-    /// Undo this effect — remove external state created by [`Effect::apply`](Effect::apply).
+    /// Undo this effect — remove external state created by [`Effect::apply`].
     ///
     /// Called during the `Cleanup` phase (finalizer deletion) in reverse
     /// declaration order. The implementation should be self-contained:

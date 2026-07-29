@@ -7,6 +7,45 @@
 //! requeue interval. [`ReadyReconcile`] is the terminal builder state with the
 //! status closure attached; [`ReconcileError`] wraps pipeline-step and
 //! finalizer failures.
+//!
+//! # Apply pass (no deletion timestamp)
+//!
+//! 1. Ensures the finalizer is present on the object, patching the finalizer
+//!    list if it is absent.
+//! 2. Runs each step in declaration order.
+//! 3. After each completed step, evaluates the status closure and patches
+//!    status only when the wrapped [`ResourceStatus`] differs from the
+//!    last-patched value.
+//! 4. As each effect completes ([`EffectOutcome::Done`](crate::effect::EffectOutcome::Done)),
+//!    records the effect's identity in the `pendingCleanup` ledger — a
+//!    framework-owned list of effects that have applied but not yet been torn
+//!    down. The ledger is seeded from the previous status at the start of the
+//!    pass, so a `Wait` at an early step never truncates it.
+//! 5. If a step returns `Wait`, patches the condition onto the status and
+//!    requeues with the step's backoff.
+//! 6. If all steps pass, sets the reconciled condition (default `Ready=True`,
+//!    configurable via [`ready_reason`](Reconcile::ready_reason)) and requeues
+//!    at the steady-state interval (default 60 s).
+//!
+//! # Cleanup pass (deletion timestamp present, finalizer found)
+//!
+//! 1. Runs effect `cleanup` methods in reverse declaration order, **filtered
+//!    by the `pendingCleanup` ledger** — cleanup only runs for effects that
+//!    actually completed apply.
+//! 2. Strikes each effect off the ledger after its cleanup succeeds and
+//!    patches the shrunk ledger back to status, giving resumability: a
+//!    `Retry` resumes from the failed effect and skips effects already
+//!    cleaned up.
+//! 3. If a cleanup returns `Retry`, requeues with backoff and **keeps the
+//!    finalizer** so the object survives for the next pass.
+//! 4. Removes the finalizer only after the ledger is emptied. Ledger entries
+//!    that match no registered cleanup step (e.g. after an effect rename or
+//!    removal) are logged and dropped — blocking deletion forever on absent
+//!    code is worse than leaking the orphaned resource.
+//!
+//! The ledger keys on the effect's Rust type name by default; override
+//! [`Effect::effect_name`] to pin a stable, release-independent key for
+//! effects whose `cleanup` must not leak on rename.
 
 mod steps;
 
