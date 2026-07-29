@@ -2,7 +2,7 @@
   <h1>kubo</h1>
   <p>
       <b>
-        A complete, opinionated framework for building Kubernetes operators in Rust.
+        A framework for building Kubernetes operators in Rust.
       </b>
   </p>
   <sub>
@@ -14,7 +14,7 @@
 
 Declare your reconcile logic as a typed, sequential pipeline of gates, effects, and polls. The framework handles finalizer lifecycle, status patching, backoff, and reverse-order cleanup — you focus on what your controller does, not the ceremony around it.
 
-Every Kubernetes interaction goes through a `KubeHandle` — a concrete handle wrapping a `kube::Client` and a field-manager identity — so the entire reconcile pass runs identically against a real cluster or an in-process fake. A top-level `Runtime` wires together leader election, signal handling, and graceful drain so your `main.rs` stays thin.
+Every Kubernetes interaction goes through a `KubeHandle` — a concrete handle wrapping a `kube::Client` and a field-manager identity — so a reconcile pass runs the same code path against a real cluster or an in-process fake; the conformance suite pins the known divergences between the two. A top-level `Runtime` wires together leader election, signal handling, and graceful drain so your `main.rs` stays thin.
 
 ## Usage
 
@@ -24,12 +24,14 @@ The runtime is your entry point. Register one listener per CRD kind:
 use kubo::runtime::Runtime;
 
 Runtime::new("my-operator", client)
-    .with(reqwest::Client::new())
+    .with(app_config)
     .listener(WebServiceListener)
     .listener(DatabaseListener)
     .run()
     .await
 ```
+
+`.with` stores a value in the runtime's type-keyed extension map; listener code reads it back with `ctx.get::<T>()`.
 
 Each listener implements the `Listener` trait — one struct per controller. The framework constructs the base `Controller` and a fresh `Reconcile` for you, so `controller()` decorates the watcher with `.owns()` / `.watches()` and `reconcile()` chains steps off the passed-in `rec`:
 
@@ -37,7 +39,7 @@ Each listener implements the `Listener` trait — one struct per controller. The
 use std::{sync::Arc, time::Duration};
 use k8s_openapi::api::{apps::v1::Deployment, core::v1::{ConfigMap, Service}};
 use kubo::{
-    ReconcileContext, async_trait,
+    HasConditions, ReconcileContext, async_trait,
     environment::{EnvironmentError, KubeHandle, ObjectRef},
     gate::{Gate, Outcome},
     effect::{Effect, EffectOutcome},
@@ -103,10 +105,10 @@ impl Listener<WebService> for WebServiceListener {
         rec: Reconcile<'a, WebService>,
     ) -> ReadyReconcile<'a, WebService, WebServiceStatus> {
         rec.ready_reason("DeploymentReady", "WebService is serving traffic")
-            .gate(ResolveDatabase::new())
+            .gate(ResolveDatabase)
             .gate(ResolveTlsSecret::new())
-            .effect(ApplyConfigMap::new(WebServiceRenderer::new(&obj)))
-            .effect(ApplyDeployment::new())
+            .effect(ApplyWebServiceConfigMap::new())
+            .effect(ApplyDeployment)
             .effect(ApplyService::new())
             .poll(WaitForDeploymentReady::new())
             .effect(ApplyConnectionSecret::new())
@@ -134,7 +136,7 @@ The `Runtime` calls `.execute(FINALIZER)` on the returned pipeline automatically
 
 ### Gates, effects, and polls
 
-A gate is a read-only dependency check that either passes (producing a typed value) or waits (producing a condition and backoff). Effects consume upstream outputs via `state.require::<UpstreamStep>()` and return `EffectOutcome::Done(value)` or `EffectOutcome::Retry { condition, backoff }`. Polls observe convergence without mutating state.
+A gate is a read-only dependency check that either passes (producing a typed value) or waits (producing a condition and backoff). Effects consume upstream outputs via `state.require::<UpstreamStep>()` and return `EffectOutcome::Done(value)` or `EffectOutcome::Retry { condition, backoff }`. The lookup is runtime-checked: a missing key produces an error naming the key and the expected value type. Polls observe convergence without mutating state.
 
 ```rust
 /// Gate: block until the referenced Database exists and is Ready.
@@ -180,7 +182,7 @@ impl Gate<WebService> for ResolveDatabase {
     }
 }
 
-/// Effect: apply the Deployment, consuming the config hash from ApplyConfigMap.
+/// Effect: apply the Deployment, consuming the ResolveDatabase gate's output from state.
 pub struct ApplyDeployment;
 
 impl StateKey for ApplyDeployment {
@@ -197,36 +199,16 @@ impl Effect<WebService> for ApplyDeployment {
         ops: &KubeHandle,
         state: &State,
     ) -> Result<EffectOutcome<()>, Self::Error> {
-        // Compile-time guarantee: this value exists in state because
-        // ApplyConfigMap runs before this effect in declaration order.
-        let config_hash = state
-            .require::<ApplyConfigMap<WebService, WebServiceRenderer>>()
+        let endpoint = state
+            .require::<ResolveDatabase>()
             .map_err(|e| EnvironmentError::Other(e.to_string()))?;
 
-        let deployment = Self::desired_deployment(&cx.cr, &config_hash);
+        let deployment = Self::desired_deployment(&cx.cr, endpoint);
         ops.apply::<Deployment>(&cx.object.namespace, deployment).await?;
         Ok(EffectOutcome::Done(()))
     }
 }
 ```
-
-### Reusable effects over generic CR types
-
-Because the `State` bag is keyed by `StateKey` (a trait with an associated `Value` type), effects can be generic over both the CR type and a renderer trait. The same `ApplyConfigMap<K, R>` effect serves every controller that needs a ConfigMap — each controller supplies its own `ConfigMapRenderer` implementation that reads upstream gate outputs from `state` and returns the desired manifest plus any resource versions that should feed into the config hash for rollout detection.
-
-```rust
-pub trait ConfigMapRenderer: Send + Sync + 'static {
-    fn render(&self, state: &State) -> Result<(ConfigMap, Vec<String>), EnvironmentError>;
-}
-
-pub struct ApplyConfigMap<K, R: ConfigMapRenderer> { /* ... */ }
-
-impl<K: EnvResource, R: ConfigMapRenderer> StateKey for ApplyConfigMap<K, R> {
-    type Value = String;  // the config hash downstream effects consume
-}
-```
-
-Downstream effects retrieve the hash with `state.require::<ApplyConfigMap<WebService, WebServiceRenderer>>()` — the type parameter pins the value to the specific renderer, so two controllers in the same operator can't accidentally read each other's config hash.
 
 ## Concepts
 
@@ -238,7 +220,7 @@ Downstream effects retrieve the hash with `state.require::<ApplyConfigMap<WebSer
 
 **Guard** — A gate whose output is evaluated but discarded. Use for precondition checks that must pass but don't produce data for downstream steps.
 
-**State** — A typed, heterogeneous map keyed by `StateKey` (a trait with an associated `Value` type). Each gate and effect declares its output type; downstream steps retrieve values with `state.get::<UpstreamStep>()` or `state.require::<UpstreamStep>()` (which returns a descriptive error naming the missing key and expected type). This is what makes effects generic over CR types — `ApplyConfigMap<K, R>` publishes under its own type, and downstream effects pin the value to the specific renderer.
+**State** — A typed, heterogeneous map keyed by `StateKey` (a trait with an associated `Value` type). Each gate and effect declares its output type; downstream steps retrieve values with `state.get::<UpstreamStep>()` or `state.require::<UpstreamStep>()` (which returns a descriptive error naming the missing key and expected type). Each step publishes under its own type, so values from steps of different types never collide.
 
 **Group** — A composable sub-pipeline that collapses into a single effect position. Sub-steps (gates, effects, polls) share a scoped state bag that never leaks into the outer pipeline; a reducer closure produces the single value published under the group's `StateKey`. Cleanup walks the group's effects in reverse declaration order, at the group's position in the outer cleanup sequence. Use it for tightly-coupled sub-steps whose intermediates are implementation details.
 
@@ -256,7 +238,7 @@ On **cleanup** (deletion timestamp present), effect `cleanup` methods run in rev
 
 `.effect(effect)` records the effect's identity in the ledger. By default the ledger key is the effect's Rust type name, so a struct rename across a release silently orphans the old `type_name`-keyed entry — the framework logs and drops it, and the old external resource may leak. For effects whose `cleanup` deletes external state that must not leak, override `Effect::effect_name` to return a stable, release-independent name; the pinned key survives struct renames so cleanup still matches the original apply.
 
-`.rotation_annotation(key)` triggers a full re-run of effects when the annotation value changes, enabling credential rotation without a deletion/recreation cycle.
+`.rotation_annotation(key)` — while the annotation is present, the framework inserts `RotationRequested` into the state bag for each pass; effects opt in by checking `state.contains::<RotationRequested>()` (e.g. to regenerate credentials without a deletion/recreation cycle). After a fully successful pass the framework removes the annotation.
 
 `.steady_state_interval(duration)` sets the requeue interval once the pipeline reaches a stable `Ready` state.
 
@@ -320,7 +302,7 @@ async fn converges_and_never_regresses() {
 }
 ```
 
-Available assertions: `monotonic` (once true, stays true), `causal` (effect cannot precede its cause), `converges` (final tick satisfies predicate), `never` (illegal state unreachable), `eventually` (predicate holds at least once), `ordered` (strict temporal ordering between two predicates). Each ships in `assert_*` (panics) and `check_*` (returns `Result` for `prop_assert!`) variants, the latter for integration with `proptest` strategies over `Op<T>` sequences.
+Available assertions: `monotonic` (once true, stays true), `causal` (effect cannot precede its cause), `converges` (final tick satisfies predicate), `never` (illegal state unreachable), `eventually` (predicate holds at least once), `ordered` (the second predicate may only become true on the same tick as or after the first). Each ships in `assert_*` (panics) and `check_*` (returns `Result` for `prop_assert!`) variants, the latter for integration with `proptest` strategies over `Op<T>` sequences.
 
 ### Test macros: `#[kubo::test]` and `#[kubo::property_test]`
 
@@ -354,7 +336,7 @@ async fn survives_transient_conflicts(world: &mut World) {
 }
 ```
 
-`iterations = 32` runs the body across seeds `0..32`; `seed = N` pins one; `seeds = [a, b, c]` replays a known set. Watch-event fuzzing (`world.fuzz_watch_events(true)`) uses the same seeds to shuffle event delivery order across objects, so `iterations = 128` exercises 128 distinct interleavings — surfacing every "I assumed event A arrives before event B" bug deterministically.
+`iterations = 32` runs the body across seeds `0..32`; `seed = N` pins one; `seeds = [a, b, c]` replays a known set. The `iterations` count applies only when neither `SEED` nor an explicit `seed`/`seeds` attribute is set: a set `SEED` collapses the run to a single iteration at that seed, and `ITERATIONS` overrides the attribute value. Watch-event fuzzing (`world.fuzz_watch_events(true)`) uses the same seeds to shuffle event delivery order across objects, so `iterations = 128` exercises 128 distinct interleavings, exposing assumptions about the order in which events arrive.
 
 `#[kubo::property_test]` bridges proptest into the same machinery. Parameters annotated with `#[strategy(expr)]` are drawn from proptest strategies; `&mut World` parameters are injected per case:
 
@@ -381,7 +363,7 @@ A single `SEED=N` environment variable seeds both proptest's case-generation RNG
 
 ## Conformance
 
-The `kubo-conformance` crate verifies that the in-process `FakeApiServer` (used by `World`) behaves identically to a real kube-apiserver for the SSA semantics the framework relies on. A `Scenario` is a sequence of apply operations with field managers; `run_against_fake` executes it against the fake and records the HTTP status per step. With the `k3d` feature enabled, `run_against_kube_apiserver` runs the same scenario against a real cluster and `assert_equivalent` compares the two traces entry-by-entry.
+The `kubo-conformance` crate checks that the in-process `FakeApiServer` (used by `World`) matches a real kube-apiserver on the SSA semantics the framework relies on, and pins the known divergences between the two. A `Scenario` is a sequence of steps — SSA applies, status applies with or without a `resourceVersion` precondition, gets of the scenario object or an arbitrary path, lists, finalizer patches, deletes, CRD reinstalls, and full reconcile passes. `run_against_fake` executes it against the fake and records, per step, the HTTP status, the normalised returned object, the normalised `status` subresource, the `resourceVersion`, the error class, and the step name. With the `k3d` feature enabled, `run_against_kube_apiserver` runs the same scenario against a real cluster and `assert_equivalent` compares the two traces entry-by-entry.
 
 ```rust
 use kubo_conformance::Scenario;
@@ -395,7 +377,7 @@ let scenario = Scenario::new("ssa-two-managers")
 let fake_trace = scenario.run_against_fake();
 ```
 
-This catches drift between the fake and real apiserver before it can mask a controller bug in unit tests.
+The comparison covers status, the normalised returned object, the normalised `status` subresource, and the error class; any mismatch panics the test.
 
 ## Backoff Strategies
 
@@ -421,7 +403,7 @@ cargo doc --open
 
 `kube::runtime::Controller` gives you a reconcile callback and requeue primitives — a solid foundation, but a blank slate. You're on your own for finalizer management, status condition upserts, ordered cleanup, backoff escalation, and threading data between logical steps. Every operator ends up reimplementing these patterns, usually slightly differently each time.
 
-`kubo` encodes those patterns into a typed pipeline model so that every controller in your operator behaves consistently, is testable without a cluster, and reads top-to-bottom as a declaration of intent rather than imperative ceremony.
+`kubo` encodes those patterns into a typed pipeline model that provides finalizer lifecycle, status patching, ordered cleanup, backoff, and a typed state bag.
 
 ## Licence
 
