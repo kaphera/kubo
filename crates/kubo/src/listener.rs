@@ -86,12 +86,23 @@ where
     /// cleanup runs before the object is garbage-collected.
     const FINALIZER: &'static str;
 
-    /// Build the kube-rs Controller watcher for this resource kind.
+    /// Return the kube-rs Controller watcher for this resource kind.
     ///
     /// Receives the `ControllerContext` so you can pull the kube client
-    /// (or anything else) from extensions for building `Api<R>`.
+    /// from extensions via `ctx.require::<kube::Client>()` (or anything
+    /// else from extensions) for building the `Api` handles
+    /// `Controller::owns` and `Controller::watches` take.
     /// The returned Controller is not yet running — the Runtime attaches
     /// shutdown via `graceful_shutdown_on` before calling `.run()`.
+    ///
+    /// Decorate `ctrl` to watch beyond this resource kind:
+    /// `Controller::owns` for child resources this controller creates —
+    /// each watched child must carry an owner reference pointing back to
+    /// this kind — and `Controller::watches` for upstream resources, with
+    /// a caller-supplied mapper that maps each changed upstream object to
+    /// the objects of this kind that need reconciling. The default
+    /// implementation returns `ctrl` undecorated, so the controller watches
+    /// only its own kind.
     fn controller(&self, ctx: &ControllerContext, ctrl: Controller<R>) -> Controller<R> {
         let _ = ctx;
         ctrl
