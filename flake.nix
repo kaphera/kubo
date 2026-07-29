@@ -43,9 +43,11 @@
           ];
 
           shellHook = ''
-            echo "kubo dev environment"
-            echo "  rustc $(rustc --version | cut -d' ' -f2)"
-            echo "  k3d   $(k3d --version | head -1 | cut -d' ' -f3)"
+            case $- in *i*)
+              echo "kubo dev environment"
+              echo "  rustc $(rustc --version | cut -d' ' -f2)"
+              echo "  k3d   $(k3d --version | head -1 | cut -d' ' -f3)"
+            ;; esac
           '';
         };
       }
