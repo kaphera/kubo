@@ -4,9 +4,15 @@
 //! it returns a typed value that downstream steps can consume. If not, it returns
 //! a condition and backoff strategy, and the framework requeues.
 //!
-//! Gates never mutate external state. They read from the Kubernetes API via
-//! [`KubeHandle`] and make a pass/wait decision. This
-//! makes them inherently idempotent and safe to retry indefinitely.
+//! Gates are expected not to mutate external state: they read from the
+//! Kubernetes API via [`KubeHandle`] and make a pass/wait decision. Following
+//! this convention keeps them idempotent and safe to retry indefinitely.
+//!
+//! Use a gate when you need to block the pipeline on an upstream resource that
+//! another controller manages; use a [`Poll`](crate::poll) when you need to
+//! wait for something your own effects created to converge. When the gate's
+//! output is not needed downstream, use
+//! [`Reconcile::guard`](crate::reconcile::Reconcile::guard) instead.
 //!
 //! # Implementing a Gate
 //!

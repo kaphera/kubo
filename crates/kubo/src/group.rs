@@ -14,6 +14,18 @@
 //! During cleanup, only effects within the group run (in reverse declaration
 //! order). Gates and polls have no cleanup obligations.
 //!
+//! A group occupies a single pipeline position. The pending-cleanup ledger
+//! records it under the group's Rust type name by default, so the
+//! rename-orphan caveat documented on
+//! [`Effect::effect_name`] applies to
+//! groups as well — but groups have no `effect_name` override, since
+//! `Effect` is implemented for `Group<V, K>` inside the framework. The
+//! ledger key (`type_name::<Group<V, K>>()`) is therefore stable only while
+//! the group's output value type and the CR type keep their names. A group
+//! registered without [`reduce`](Group::reduce) fails
+//! at runtime with
+//! `ReconcilerError::Env(EnvironmentError::Other("group has no reducer"))`.
+//!
 //! # Motivation
 //!
 //! Some logical operations consist of several tightly-coupled sub-steps that
@@ -29,25 +41,30 @@
 //! # Example
 //!
 //! ```ignore
-//! use k8s_operator_reconciler::group::Group;
+//! use std::sync::Arc;
+//!
+//! use kubo::group::Group;
+//! use kubo::reconcile::Reconcile;
+//!
+//! let obj = Arc::new(target);
 //!
 //! Reconcile::new(&ops, obj)
-//!     .gate(ResolvePostgresDatabase::new(...))
+//!     .gate(ResolvePostgresDatabase { .. })
 //!     .group(
 //!         Group::new()
-//!             .gate(ResolveAdminPassword::new(...))
-//!             .effect(ApplyConfigMap::new(&obj))
-//!             .effect(ApplyAdminSecret::new(&obj))
+//!             .gate(ResolveAdminPassword { .. })
+//!             .effect(ApplyConfig { .. })
+//!             .effect(ApplySecret { .. })
 //!             .reduce(|state| {
-//!                 let cm_rv = state.require::<ApplyConfigMap>()?;
-//!                 let secret_rv = state.require::<ApplyAdminSecret>()?;
-//!                 Ok(compute_hash(cm_rv, secret_rv))
-//!             })
+//!                 let config = state.require::<ApplyConfig>()?;
+//!                 let secret = state.require::<ApplySecret>()?;
+//!                 Ok(compute_hash(config, secret))
+//!             }),
 //!     )
-//!     .effect(ApplyDeployment::new(&obj))
-//!     .poll(WaitForReady::new(...))
+//!     .effect(ApplyWorkload { .. })
+//!     .poll(WaitForReady { .. })
 //!     .status(|state, _prev| { ... })
-//!     .execute(FINALIZER)
+//!     .execute("example.com/cleanup")
 //!     .await
 //! ```
 

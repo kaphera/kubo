@@ -6,9 +6,9 @@
 //! dynamic-resource support.
 //!
 //! This is what you construct at operator startup and pass into
-//! [`Runtime::new`](crate::runtime::Runtime::new). In tests, construct one from
-//! the [`World::client()`](crate::testing::World::client) to run the same
-//! production code paths against the fake API server.
+//! [`Runtime::new`](crate::runtime::Runtime::new). In tests,
+//! `World::env(field_manager)` returns a ready handle, so the same production
+//! code paths run against the fake API server.
 //!
 //! ```ignore
 //! let client = kube::Client::try_default().await?;

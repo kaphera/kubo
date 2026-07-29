@@ -3,9 +3,10 @@
 //! [`KubeHandle`] is the sole Kubernetes seam in the framework.  Every gate,
 //! effect, and poll receives `&KubeHandle` and uses its inherent methods to read
 //! or mutate cluster state.  In production you construct one from a real
-//! `kube::Client`; in tests you construct one from the client provided by
-//! `kubo::testing::World`, which points at a `kubo_test_fakeapi::FakeApiServer`
-//! — no cluster needed.
+//! `kube::Client`; in tests the idiomatic path is
+//! `kubo::testing::World::env(field_manager)`, which returns a ready
+//! `KubeHandle` backed by a `kubo_test_fakeapi::FakeApiServer` — no cluster
+//! needed.
 //!
 //! [`EnvResource`] and [`ClusterEnvResource`] are bound-collection aliases
 //! for the constraints every typed Kubernetes resource must satisfy.  They are

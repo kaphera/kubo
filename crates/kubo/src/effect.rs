@@ -1,8 +1,9 @@
 //! Effects are the read-write phase of the pipeline — where side-effects live.
 //!
 //! An effect creates, updates, or configures external state (Kubernetes resources,
-//! Vault mounts, database schemas, cloud APIs). It is the only step kind that
-//! mutates anything, and consequently the only one that carries a cleanup obligation.
+//! Vault mounts, database schemas, cloud APIs). By convention it is the only
+//! step kind that mutates anything, and consequently the only one that carries
+//! a cleanup obligation.
 //!
 //! # Design Constraints
 //!
@@ -44,6 +45,10 @@
 //!     }
 //! }
 //! ```
+//!
+//! See [`CleanupAction`](crate::cleanup) for cleanup outcomes and
+//! [`ResourceStatus`](crate::status::ResourceStatus) for the pending-cleanup
+//! ledger that filters the cleanup walk.
 
 use async_trait::async_trait;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
@@ -91,8 +96,9 @@ pub enum EffectOutcome<T> {
 
 /// A write operation that mutates cluster or external state.
 ///
-/// Effects are the only read-write phase in the reconcile pipeline.
-/// Gates and Polls are read-only; Effects are where side-effects live.
+/// Effects are the read-write phase of the reconcile pipeline by convention:
+/// gates and polls are expected to be read-only, and effects are where
+/// side-effects live.
 ///
 /// Like gates, effects implement [`StateKey`] to declare what they
 /// produce. The framework inserts the value returned via

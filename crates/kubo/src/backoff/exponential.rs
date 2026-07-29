@@ -1,4 +1,4 @@
-//! Duration-aware exponential backoff.
+//! Duration-aware backoff that escalates with time spent failing.
 //!
 //! Unlike counter-based backoff (which requires mutable state across reconcile
 //! passes), this strategy derives its escalation from the elapsed time since
@@ -18,7 +18,9 @@
 //!
 //! On the first failure (`elapsed = 0`), the wait equals `base`. As the
 //! condition persists unchanged, `elapsed` grows and the wait escalates
-//! linearly (scaled by `factor - 1`) until it hits `cap`.
+//! linearly (scaled by `factor - 1`) until it hits `cap`. A factor at or
+//! below 1.0 clamps to zero growth, so the wait stays at `base` (or `cap`,
+//! if that is smaller) — the strategy then behaves as a fixed backoff.
 
 use std::time::Duration;
 

@@ -1,10 +1,11 @@
 //! Polls observe external state without mutating it, waiting for convergence.
 //!
-//! A poll is a read-only check placed after effects in the pipeline. Where a
-//! gate checks whether a *dependency* is ready (blocking downstream steps), a
-//! poll checks whether something *this controller created* has converged to its
-//! desired state. The distinction matters for semantics: polls sit after effects
-//! and never produce state values for downstream consumption.
+//! A poll is a read-only check, typically placed after effects in the pipeline.
+//! Where a gate checks whether a *dependency* is ready (blocking downstream
+//! steps), a poll checks whether something *this controller created* has
+//! converged to its desired state. The distinction matters for semantics:
+//! polls are typically placed after effects and never produce state values for
+//! downstream consumption.
 //!
 //! # When to Use a Poll vs a Gate
 //!

@@ -166,10 +166,9 @@
 //! something changed. Conditions are built through a generation-scoped
 //! [`ConditionContext`].
 //!
-//! **The CRD schema must declare the framework-managed status fields.**
-//! Kubernetes structural-schema pruning silently strips status fields the CRD
-//! does not declare — a stale schema makes the API server drop `pendingCleanup`
-//! on every patch, and the framework then sees an empty ledger.
+//! **The CRD schema must declare the framework-managed status fields** — see
+//! [`status`] for why structural-schema pruning makes this
+//! mandatory.
 //!
 //! ## Finalizers and cleanup
 //!

@@ -1,9 +1,15 @@
 //! Typed state bag for passing data between pipeline steps.
 //!
 //! The state bag is the mechanism by which gates and effects communicate their
-//! outputs to downstream steps without coupling them directly. Each step declares
-//! a [`StateKey`] with an associated `Value` type; the framework inserts the value
-//! after a successful step, and downstream steps retrieve it by key type.
+//! outputs to downstream steps without coupling them directly. Each gate or
+//! effect registered with [`Reconcile::gate`](crate::reconcile::Reconcile::gate)
+//! or [`Reconcile::effect`](crate::reconcile::Reconcile::effect) declares a
+//! [`StateKey`] with an associated `Value` type; the framework inserts the
+//! value after a successful step, and downstream steps retrieve it by key
+//! type. Guards registered with
+//! [`Reconcile::guard`](crate::reconcile::Reconcile::guard) store nothing,
+//! and [`Reconcile::gate_as`](crate::reconcile::Reconcile::gate_as) stores
+//! the value under a separate marker key rather than the gate's own type.
 //!
 //! This design gives you compile-time type safety on the values flowing through
 //! the pipeline, while keeping steps fully decoupled — a step only knows about
@@ -13,7 +19,7 @@
 //!
 //! ```ignore
 //! // In your effect's apply method:
-//! async fn apply(&self, env: &E, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
+//! async fn apply(&self, cx: &ReconcileContext<K>, ops: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
 //!     let upstream_url = state.require::<ResolveDatabase>()?;
 //!     // Use upstream_url to configure this effect...
 //!     Ok(EffectOutcome::Done(format!("{upstream_url}/my-table")))
@@ -70,8 +76,9 @@ pub enum StateError {
 ///
 /// The framework creates a fresh `State` at the start of each apply pass.
 /// Gates and effects insert their outputs; downstream steps read them.
-/// You never construct or mutate `State` directly in controller code —
-/// the framework manages its lifecycle.
+/// Steps receive the bag from the framework, and controller code is not
+/// expected to construct or mutate `State` directly — the framework manages
+/// its lifecycle.
 #[derive(Default)]
 pub struct State(HashMap<TypeId, Box<dyn Any + Send + Sync>>);
 
@@ -114,9 +121,9 @@ impl State {
 ///
 /// Effects check `state.contains::<RotationRequested>()` to decide whether
 /// they should regenerate credentials, even when the resource spec is otherwise
-/// unchanged. The annotation is typically cleared by the operator after the
-/// rotation pass completes so that the effect does not fire on every subsequent
-/// reconciliation.
+/// unchanged. After a fully-successful apply pass the framework removes the
+/// annotation via merge patch (a failed removal is logged and non-fatal), so
+/// that the effect does not fire on every subsequent reconciliation.
 pub struct RotationRequested;
 
 impl StateKey for RotationRequested {

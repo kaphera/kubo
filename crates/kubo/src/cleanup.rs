@@ -2,8 +2,11 @@
 //!
 //! When a custom resource is being deleted (deletion timestamp present and
 //! finalizer matched), the framework runs each effect's `cleanup` method in
-//! reverse declaration order. The [`CleanupAction`] returned by each cleanup
-//! tells the framework whether to continue, retry, or abort.
+//! reverse declaration order, filtered by the pending-cleanup ledger so that
+//! cleanup only runs for effects that actually applied — see
+//! [the ledger's semantics](crate::status#pending-cleanup-ledger). The
+//! [`CleanupAction`] returned by each cleanup tells the framework whether to
+//! continue to the next effect or to retry on a later pass.
 
 use crate::backoff::Backoff;
 

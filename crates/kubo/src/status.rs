@@ -5,6 +5,10 @@
 //! via `#[serde(flatten)]`. The reconcile framework wraps the user's domain
 //! type `T` in this automatically — the status closure only needs to return `T`.
 //!
+//! Conditions come from the CR type's [`HasConditions`](crate::HasConditions)
+//! implementation, which seeds the pipeline's initial conditions;
+//! [`ResourceStatus<T>`] carries them in every patch.
+//!
 //! # Pending-cleanup ledger
 //!
 //! `pending_cleanup` is a framework-owned list of effect names that have
@@ -23,8 +27,9 @@
 //! **CRD regeneration is mandatory** when adopting a release that adds
 //! this field. Kubernetes structural-schema pruning silently strips
 //! unknown status fields, so a stale CRD will make the apiserver drop
-//! `pendingCleanup` on every patch — the framework will see an empty
-//! ledger and fall back to the blind walk, leaking external resources.
+//! `pendingCleanup` on every patch — the framework will then see an empty
+//! ledger, skip every effect cleanup, and proceed with deletion, leaking
+//! the external resources.
 //! `#[serde(default, skip_serializing_if = "Vec::is_empty")]` keeps empty
 //! ledgers off the wire, but it cannot protect against a missing CRD
 //! schema entry.

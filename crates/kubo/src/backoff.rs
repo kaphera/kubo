@@ -3,7 +3,13 @@
 //! When a gate returns `Wait` or an effect returns `Retry`, it provides a
 //! `Box<dyn Backoff>` alongside the condition. The framework calls
 //! [`Backoff::next`] with the previous condition (if any) to determine how
-//! long to wait before the next reconcile attempt.
+//! long to wait before the next reconcile attempt. The same holds for
+//! [`PollState::Pending`](crate::poll::PollState::Pending) and
+//! [`PollState::Failed`](crate::poll::PollState::Failed), which also pair a
+//! condition with a backoff; [`CleanupAction::Retry`](crate::cleanup::CleanupAction::Retry)
+//! carries only the backoff — the framework synthesises the `Cleanup`
+//! condition for backoff computation. The reconcile loop is the only caller
+//! of [`Backoff::next`].
 //!
 //! The framework ships two strategies: [`Fixed`](fixed::Fixed) for constant
 //! intervals and [`Exponential`](exponential::Exponential) for duration-aware
@@ -24,11 +30,16 @@ use k8s_openapi::{apimachinery::pkg::apis::meta::v1::Condition, jiff::Timestamp}
 /// `previous.last_transition_time` to `now`), enabling time-based escalation
 /// without any mutable counter.
 pub struct BackoffContext<'a> {
-    /// The condition the framework is about to write to the object's status.
+    /// The condition the wait/retry outcome produced. On the apply path this
+    /// is the condition the framework patches onto the object's status; on
+    /// the cleanup-retry path the framework synthesises a `Cleanup` condition
+    /// purely for backoff computation and never persists it.
     pub emitting: &'a Condition,
 
     /// The existing condition with the same `type_` from the object's current
     /// status, if any. `None` on the first failure (no prior condition exists).
+    /// On the cleanup-retry path it is effectively always `None`, because the
+    /// synthesised `Cleanup` condition is never persisted.
     pub previous: Option<&'a Condition>,
 
     /// The current wall-clock time, for computing elapsed durations.
