@@ -13,8 +13,9 @@
 //! - [`World::run_until_idle`] — yield a fixed number of times (200), giving
 //!   spawned controller tasks a chance to run.
 //! - [`World::step`] — a single cooperative yield point.
-//! - [`World::advance`] — advance paused tokio time by a [`Duration`] then
-//!   call [`run_until_idle`](World::run_until_idle).  Requires the test to use
+//! - [`World::advance`] — advance paused tokio time by a [`Duration`], flush
+//!   the fake's pending watch events, then call
+//!   [`run_until_idle`](World::run_until_idle).  Requires the test to use
 //!   paused time (`#[tokio::test(start_paused = true)]`).
 //! - [`World::forbid_parking`] / [`World::allow_parking`] — parking-policy
 //!   flags recorded on the `World`; not consulted by any runtime path.
@@ -317,12 +318,15 @@ impl World {
         }
     }
 
-    /// Advance paused tokio time by `duration`, then call
-    /// [`run_until_idle`](Self::run_until_idle).
+    /// Advance paused tokio time by `duration`, flush the fake's pending
+    /// watch events, then call [`run_until_idle`](Self::run_until_idle).
     ///
     /// This wakes any timers (requeue sleeps, backoff sleeps) whose deadline
-    /// falls within the advanced window.  Requires the enclosing test to use
-    /// paused time:
+    /// falls within the advanced window.  Between the clock move and the
+    /// yield, the fake's pending watch-event buffer is flushed (shuffled and
+    /// broadcast when watch fuzzing is enabled) — see
+    /// [`FakeApiServer::flush_pending_watch_events`].  Requires the enclosing
+    /// test to use paused time:
     ///
     /// ```rust,no_run
     /// #[tokio::test(start_paused = true)]
@@ -487,8 +491,9 @@ impl World {
     /// ```
     ///
     /// Faults are injected on mutable operations (PATCH / DELETE) only.  The
-    /// probabilistic variant ([`FaultBuilder::at_random_rate`]) is seeded from
-    /// the world's RNG so results are reproducible from a single `SEED` value.
+    /// probabilistic variant ([`FaultBuilder::at_random_rate`]) uses the
+    /// fake's own seeded RNG (seeded from the world's seed) so results are
+    /// reproducible from a single `SEED` value.
     pub fn fault(&self, fault: Fault) -> FaultBuilder {
         self.fake.fault_builder(fault)
     }

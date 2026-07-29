@@ -8,13 +8,14 @@
 //! complete status every reconcile.  The harness pins that contract and
 //! documents where the fake cannot reproduce the real apiserver's behaviour.
 //!
-//! Row 1 is the ledger's hot path and is asserted equivalent.  Rows 2 and 3
-//! are *known fake divergences* — the harness records the boundary rather than
-//! asserting equivalence, because the fake does not model status-subresource
-//! ownership (`Store::status_patch` replaces the `status` field verbatim and
-//! returns 200 regardless of `fieldManager` / `force`).  Row 4 is a
-//! characterisation of the real apiserver's force-on-status semantics, not a
-//! framework contract (the framework no longer force-applies status).
+//! Row 1 and Row 3 are asserted equivalent.  Row 2 and the cross-manager omit
+//! test are *known fake divergences* — the harness records the boundary rather
+//! than asserting equivalence, because the fake does not model
+//! status-subresource ownership (`Store::status_patch` replaces the `status`
+//! field verbatim and returns 200 regardless of `fieldManager` / `force`).
+//! Row 4 is a characterisation of the real apiserver's force-on-status
+//! semantics, not a framework contract (the framework does not force-apply
+//! status).
 
 #[cfg(feature = "k3d")]
 use kubo_conformance::assert_equivalent;

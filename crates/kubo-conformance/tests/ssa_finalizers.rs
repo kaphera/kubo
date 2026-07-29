@@ -9,7 +9,7 @@
 //!
 //! Rows 1–3 are equivalence: the fake and real apiserver agree on the
 //! finalizer-aware delete, the teardown completion, and the no-finalizer
-//! baseline. Row 4 is the known fake divergence: the framework clears
+//! baseline. Row 4 is a characterisation: the framework clears
 //! finalizers with merge-patch (no `fieldManager`), which bypasses SSA
 //! ownership. On a real cluster this is legal but interacts with SSA-owned
 //! finalizers in ways the fake's merge-patch simply overwrites — the row

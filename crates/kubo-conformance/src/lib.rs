@@ -175,9 +175,12 @@ pub fn default_open_api_v3_schema() -> Value {
 /// structural-pruning scenario writes via `apply_status`.
 ///
 /// `type_keyword` is the field's top-level type ("array", "integer", …); the
-/// "declaring" schema emits a minimal `{ "type": <type_keyword> }` declaration
-/// per field (no `items`/`properties` constraints), which is enough to keep the
-/// apiserver from pruning the field while accepting the representative value.
+/// "declaring" schema emits a minimal declaration per field — the
+/// `{ "type": <type_keyword> }` keyword plus the fragments structural-schema
+/// validation makes mandatory (an `items` node for arrays,
+/// `x-kubernetes-preserve-unknown-fields` for objects) — which is enough to
+/// keep the apiserver from pruning the field while accepting the
+/// representative value.
 /// `representative_value` is a minimal value valid under that minimal
 /// declaration.  Both are derived from the schemars output, so a new framework
 /// status field automatically enters the structural-pruning surface without a
@@ -188,8 +191,10 @@ pub struct DerivedStatusField {
     /// (e.g. `conditions`, `pendingCleanup`).
     pub name: String,
     /// The field's top-level OpenAPI type keyword (`"array"`, `"integer"`,
-    /// …). The declaring schema emits a minimal `{ "type": <type_keyword> }`
-    /// per field — enough to stop apiserver pruning while accepting the
+    /// …). The declaring schema emits a minimal declaration per field — the
+    /// type keyword plus the fragments structural-schema validation makes
+    /// mandatory (`items` for arrays, `x-kubernetes-preserve-unknown-fields`
+    /// for objects) — enough to stop apiserver pruning while accepting the
     /// representative value.
     pub type_keyword: String,
     /// A minimal value valid under the minimal type declaration, written by
@@ -253,9 +258,10 @@ pub struct TraceEntry {
     /// HTTP status code returned by the API server for this step.
     pub status: u16,
     /// The returned object, normalised (see [`normalise_object`]).  Present
-    /// for operations that return the object (GET, PATCH,
-    /// DELETE-of-finalizer-blocked).  `None` for error responses, which carry
-    /// a Kubernetes `Status` body rather than the resource itself.
+    /// for operations that return the object (GET, PATCH).  List steps carry
+    /// the normalised `items` array.  `None` for DELETE, the synthetic
+    /// `ReinstallCrd` / `RunReconcile` entries, and error responses, which
+    /// carry a Kubernetes `Status` body rather than the resource itself.
     pub object: Option<Value>,
     /// The `status` subresource as the server persisted it, normalised (see
     /// [`normalise_status`]).  Extracted from the returned object's `status`
@@ -349,10 +355,10 @@ impl Trace {
 
 /// Assert that two [`Trace`]s are equivalent.
 ///
-/// Compares status codes, the normalised returned object, and the normalised
-/// `status` subresource, entry-by-entry.  Panics on any mismatch with the
-/// failing step index and a side-by-side diff so the divergence is visible in
-/// test output.
+/// Compares status codes, the normalised returned object, the normalised
+/// `status` subresource, and the reconcile error class, entry-by-entry.  Panics
+/// on any mismatch with the failing step index and a side-by-side diff so the
+/// divergence is visible in test output.
 pub fn assert_equivalent(a: &Trace, b: &Trace) {
     assert_eq!(
         a.entries.len(),
@@ -417,10 +423,12 @@ const SERVER_ASSIGNED_METADATA: &[&str] = &[
 /// in place.
 ///
 /// Removes the noisy `metadata` fields listed in
-/// `SERVER_ASSIGNED_METADATA`.  What remains — `spec`, framework-owned
-/// `status`, and the stable parts of `metadata` (name, namespace, labels,
-/// annotations, finalizers) — is the surface the framework reads and writes,
-/// and is where fake/real equivalence must hold.
+/// `SERVER_ASSIGNED_METADATA`, and drops an empty `finalizers` array (real
+/// omits the field once the list is empty; the fake persists `[]`), so
+/// `finalizers` survives only when non-empty.  What remains — `spec`,
+/// framework-owned `status`, and the stable parts of `metadata` (name,
+/// namespace, labels, annotations, finalizers) — is the surface the framework
+/// reads and writes, and is where fake/real equivalence must hold.
 pub fn normalise_object(obj: &mut Value) {
     if let Some(meta) = obj.get_mut("metadata").and_then(|m| m.as_object_mut()) {
         for k in SERVER_ASSIGNED_METADATA {
@@ -688,7 +696,8 @@ enum StepKind {
     /// observes a single named resource; `List` observes the collection.  It is
     /// the wire shape of the framework's `KubeHandle::list` / `list_all` (a
     /// plain `GET` against the collection path, no `fieldManager`, no body),
-    /// which the runtime's reflector seeds from before switching to watch.
+    /// which kube's watcher fetches as its initial list before switching to
+    /// watch.
     ///
     /// The optional `label_selector` is sent verbatim as a `?labelSelector=`
     /// query parameter.  It exists so a scenario can isolate its own object
@@ -813,7 +822,7 @@ pub type RunReconcilePipeline = Box<
 /// scenario (see `Scenario::object_name`).  The object lives at
 /// `/apis/conformance.kubo.dev/v1/namespaces/default/conformanceobjects/<name>`
 /// and is created by the scenario's first apply and destroyed (on the real
-/// arm) by `reset_conformance_object` before the scenario runs.  Per-scenario
+/// arm) by `reset_conformance_object_strict` before the scenario runs.  Per-scenario
 /// objects are what unlocks real-side parallelism and multi-object scenarios;
 /// the one shared resource that remains is the CRD itself, which `ReinstallCrd`
 /// steps delete wholesale — see that step's docs for the serialisation caveat.
@@ -938,7 +947,7 @@ impl Scenario {
     }
 
     /// Append an SSA against `/status` carrying a `metadata.resourceVersion`
-    /// precondition captured from a prior step.
+    /// precondition captured from a prior step, sent with `force = true`.
     ///
     /// `rv_ref` names a capture slot populated by [`Scenario::capture_rv`] on an
     /// earlier step (typically a GET).  The captured value is injected into the
@@ -1147,9 +1156,9 @@ impl Scenario {
 
     /// Assert that the most recently added step produces the given HTTP status.
     ///
-    /// If the actual status differs, [`run_against_fake`](Scenario::run_against_fake)
-    /// panics with a descriptive message that includes the scenario name and
-    /// step index.
+    /// If the actual status differs, the run panics — on either arm, fake or
+    /// real cluster — with a descriptive message that includes the scenario
+    /// name and step index.
     pub fn expect_last_status(mut self, code: u16) -> Self {
         if let Some(last) = self.steps.last_mut() {
             last.expected_status = Some(code);
@@ -1823,7 +1832,7 @@ async fn read_fake_body(body: kubo_test_fakeapi::ResponseBody) -> Option<Value> 
 /// conformance harness can have, so the real arm refuses to start unless the
 /// caller names the cluster's server endpoint in the
 /// `KUBO_CONFORMANCE_CLUSTER` environment variable and that name matches the
-/// kubeconfig's current context.  Refusal names the cluster it refused.
+/// kubeconfig's current context's server URL.  Refusal names the cluster it refused.
 #[cfg(feature = "k3d")]
 fn verify_cluster_identity(config: &kube::Config) {
     let actual = config.cluster_url.to_string();
@@ -2024,8 +2033,9 @@ async fn install_conformance_crd(client: &kube::Client) {
 /// CRD has a `customresourcecleanup` finalizer and stays Terminating until all
 /// instances are garbage-collected, so waiting for 404 also waits for
 /// every instance of the type to be gone), then POSTs a new CRD whose
-/// `spec.versions[0].schema.openAPIV3Schema` is `open_api_v3_schema`, and waits
-/// for the `Established` condition before returning.
+/// `spec.versions[0].schema.openAPIV3Schema` is `open_api_v3_schema`, then
+/// polls for the `Established` condition (up to ~50 × 100 ms) and returns
+/// regardless — a still-unestablished type 404s on the next apply.
 ///
 /// CRD v1 does not allow removing fields from a stored version's schema
 /// in-place, so a delete-and-recreate is the only way to tighten the status

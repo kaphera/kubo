@@ -19,14 +19,17 @@
 //! The registry is the source of truth. The `divergence_table_matches_conformance_md`
 //! test in `tests/divergence_registry.rs` re-renders the registry to the markdown
 //! divergence table in `CONFORMANCE.md` at the repo root and asserts the two
-//! match, so that file cannot drift from the registry without a failing test.
+//! match, so the table between the markers cannot drift from the registry
+//! without a failing test.
 //! That test is the one place code reads a doc; it exists to keep the rendered
 //! table honest, not to make the code depend on any doc to be understood.
 //!
 //! ## Kinds
 //!
 //! - [`DivKind::KnownDivergence`]: fake and real diverge; the pinning test
-//!   asserts both sides separately and does *not* call `assert_equivalent`.
+//!   asserts both sides separately and does *not* call `assert_equivalent`
+//!   across the divergent surface (a pinning test may still compare the
+//!   non-divergent subset by name).
 //! - [`DivKind::Characterisation`]: the row characterises real apiserver
 //!   behaviour the framework does *not* rely on (e.g. force-on-status, which
 //!   the framework never uses on the status subresource). Recorded so the
@@ -94,7 +97,8 @@ pub enum DivId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DivKind {
     /// Fake and real diverge; the pinning test asserts both sides separately
-    /// and does not call `assert_equivalent`.
+    /// and does not call `assert_equivalent` across the divergent surface (a
+    /// pinning test may still compare the non-divergent subset by name).
     KnownDivergence,
     /// Characterises real apiserver behaviour the framework does not rely on.
     /// Recorded for visibility; not a framework contract.
@@ -125,8 +129,9 @@ pub struct Divergence {
     /// The stable identifier. One per divergence; unique across the registry.
     pub id: DivId,
     /// A short label naming the scenario family this divergence belongs to
-    /// (e.g. "status SSA row 2", "structural pruning"). Rendered in the
-    /// generated table and matched by the doc-sync test.
+    /// (e.g. "status SSA — second manager conflict", "concurrency — stale
+    /// resourceVersion status patch"). Rendered in the generated table and
+    /// matched by the doc-sync test.
     pub section: &'static str,
     /// One-line summary, for the generated table.
     pub summary: &'static str,
@@ -144,9 +149,9 @@ pub struct Divergence {
 
 /// The source-of-truth registry. Declare each known divergence once here.
 ///
-/// Ordering follows the scenario-family ordering: status-subresource SSA,
-/// structural-schema pruning, finalizers and deletion, concurrency, the
-/// reconcile loop, then the strip-TODO. The completeness test in
+/// Ordering follows the scenario-family ordering: status SSA, structural
+/// pruning, finalizers, concurrency, the reconcile loop; a `StripTodo`
+/// entry, when one exists, goes last. The completeness test in
 /// `tests/divergence_registry.rs` asserts every non-`StripTodo` entry's
 /// `pinned_by` test exists and references the entry's id, and every
 /// `assert_known_divergence(DivId::X)` call in the test files resolves to a
@@ -273,7 +278,9 @@ pub fn render_table() -> String {
 
 /// The markdown identifier for a [`DivId`] variant, as used in the rendered
 /// table and in `assert_known_divergence(...)` call sites. Kept in sync with
-/// the variant names by the `divergence_ids_match_doc` test.
+/// the variant names by `id_label`'s exhaustive match (a new `DivId` variant
+/// fails to compile until handled here) and the `id_label_covers_every_id`
+/// test.
 pub fn id_label(id: DivId) -> &'static str {
     match id {
         DivId::SsaStatusSecondManagerConflict => "DivId::SsaStatusSecondManagerConflict",

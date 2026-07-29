@@ -1,19 +1,18 @@
 //! Concurrency and optimistic locking.
 //!
-//! The framework's status-patch wire shape (`KubeHandle::patch_status`) is SSA
-//! with `force=true` and no `resourceVersion` precondition. A controller that
+//! The framework's status-patch wire shape (`KubeHandle::patch_status`) is
+//! non-force SSA with no `resourceVersion` precondition. A controller that
 //! wanted optimistic concurrency would GET to observe the current
 //! `resourceVersion`, then send that rv in the apply body's `metadata`; the
 //! apiserver 409s if an intervening write made it stale. The fake does not
 //! enforce the resourceVersion precondition, so a stale rv that real rejects
 //! with 409 is silently accepted (200) by the fake.
 //!
-//! This is a forward-looking conformance test — it characterises what would
-//! happen if the framework added a rv precondition to `patch_status`, not a
-//! test of current framework behaviour. The stale-rv status-patch scenario is
-//! a characterisation (like the merge-patch-clears-SSA-owned-finalizer one),
-//! not equivalence: fake and real diverge by design on the stale-rv step, so
-//! [`assert_equivalent`] is not called.
+//! This is a forward-looking conformance test: the rv precondition is
+//! exercised at the wire level, and the framework's `patch_status` does not
+//! send one. The stale-rv status-patch scenario is a known fake divergence
+//! (registry kind `KnownDivergence`), not equivalence: fake and real diverge
+//! by design on the stale-rv step, so [`assert_equivalent`] is not called.
 
 use kubo_conformance::{DivId, Scenario, assert_known_divergence};
 use serde_json::json;

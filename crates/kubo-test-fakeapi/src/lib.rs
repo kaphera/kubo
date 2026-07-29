@@ -2,8 +2,8 @@
 //!
 //! [`FakeApiServer`] is a [`tower::Service`] that implements a minimal slice
 //! of the Kubernetes HTTP API protocol against an in-memory [`Store`].  Pass
-//! it directly to `kube::Client::new` to get a fully real kube-rs client
-//! that talks to the fake instead of a cluster.
+//! it directly to `kube::Client::new` to get a real kube-rs client that talks
+//! to the fake instead of a cluster.
 //!
 //! ## Supported operations
 //!
@@ -12,9 +12,12 @@
 //! - `GET?watch=1` collection (watch) — upgrades to a streaming NDJSON response
 //!   backed by a per-GVK `tokio::sync::broadcast` channel; future mutations are
 //!   forwarded as `ADDED` / `MODIFIED` / `DELETED` events
-//! - `PATCH` with `application/apply-patch+yaml` — SSA strategic merge with per-field ownership
-//!   tracking and 409 Conflict detection
+//! - `PATCH` with `application/apply-patch+yaml` — server-side apply:
+//!   per-field ownership tracking with 409 Conflict detection, deep merge with
+//!   RFC 7396 semantics; creates the object when absent
 //! - `PATCH` with `application/merge-patch+json` — RFC 7396 merge patch
+//! - `PATCH` (object path) with any other content type — full-replace
+//!   upsert (`.../status` ignores the content type)
 //! - `PATCH .../status` — isolated status update + history recording
 //! - `DELETE` — finalizer-aware
 
@@ -44,13 +47,14 @@ type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Ring-buffer capacity for per-GVK broadcast channels.
 ///
-/// Events beyond this count are dropped (lagged receivers will skip them and
-/// the watcher will eventually re-list to recover).
+/// Events beyond this count are dropped: lagged broadcast receivers skip the
+/// missed events, and the fake does not signal the gap.
 const WATCH_CAPACITY: usize = 256;
 
 // ── WatchEventRaw ─────────────────────────────────────────────────────────────
 
-/// A raw Kubernetes watch event, broadcast on every store mutation.
+/// A raw Kubernetes watch event, broadcast on every store mutation (buffered
+/// when fuzzing is enabled).
 ///
 /// The per-GVK watch channel carries these; the forwarder task serialises them
 /// as newline-delimited JSON into the streaming watch response body.
@@ -142,9 +146,9 @@ type WatchKey = (String, String, String);
 
 /// A failure to inject at the fake API server boundary.
 ///
-/// Each variant maps to a real failure mode the kube-rs client encounters in
-/// production.  Probabilistic faults use the world's seeded RNG so every
-/// choice is deterministic and reproducible from a single `u64` seed.
+/// Probabilistic faults use the fake's seeded RNG (seeded from the world's
+/// seed) so every choice is deterministic and reproducible from a single
+/// `u64` seed.
 #[derive(Clone, Debug)]
 pub enum Fault {
     /// Returns HTTP 409 Conflict — simulates concurrent SSA conflicts.
@@ -157,7 +161,8 @@ pub enum Fault {
     Throttled,
     /// Delays the response by `d` — simulates network latency.
     Latency(Duration),
-    /// Closes the connection mid-response — simulates a network partition.
+    /// Fails the request before a response is produced — simulates a network
+    /// partition.
     Disconnect,
 }
 
@@ -212,10 +217,12 @@ pub(crate) struct SsaConflict {
 
 /// The in-memory object store.
 ///
-/// All writes increment `resource_version` and inject it into
-/// `metadata.resourceVersion` so kube-rs can cache-bust correctly.
+/// Every write that stores an object increments `resource_version` and
+/// injects it into `metadata.resourceVersion`; a delete that removes the
+/// object does not.
 ///
-/// Each write also broadcasts a `WatchEventRaw` to the per-GVK channel so
+/// Each write also emits a `WatchEventRaw` to the per-GVK channel —
+/// broadcast immediately, or buffered when watch fuzzing is enabled — so
 /// any active watch streams see the mutation.
 pub struct Store {
     objects: HashMap<StoreKey, Value>,
@@ -223,28 +230,32 @@ pub struct Store {
     status_history: Vec<StatusRecord>,
     /// Per-GVK broadcast channels, lazily created on first `subscribe()` call.
     watch_senders: HashMap<WatchKey, broadcast::Sender<WatchEventRaw>>,
-    /// Seeded RNG for deterministic tie-breaking and probabilistic fault injection.
+    /// Seeded RNG for the fake's randomised choices.
     ///
-    /// Seeded from [`FakeApiServer::new_seeded`].  Used by fault injection
-    /// and watch fuzzing to make randomised choices reproducible from a
-    /// single [`u64`] seed.
+    /// Seeded from [`FakeApiServer::new_seeded`].  It has exactly two uses —
+    /// the `RandomRate` fault draw and the pending-event shuffle in
+    /// [`flush_pending_watch_events`](Self::flush_pending_watch_events) — so
+    /// every randomised choice is reproducible from a single [`u64`] seed.
     rng: rand::rngs::StdRng,
     /// Active fault rules consulted before every mutable request (PATCH / DELETE).
     fault_rules: Vec<FaultRule>,
     /// Pending watch events buffered for deterministic fuzz delivery.
     ///
     /// When [`fuzz_watch_events`](Self::fuzz_watch_events) is `true`, mutation
-    /// methods push here instead of broadcasting immediately.  Call
-    /// [`flush_pending_watch_events`](Self::flush_pending_watch_events) at each
-    /// tick boundary to shuffle (using the seeded RNG) and broadcast.
+    /// methods push here instead of broadcasting immediately.
+    /// [`flush_pending_watch_events`](Self::flush_pending_watch_events) —
+    /// called by `World::advance` after the clock moves and before
+    /// `run_until_idle` yields to spawned tasks — shuffles (using the seeded
+    /// RNG, when fuzzing is still enabled) and broadcasts.
     pending_events: Vec<(String, String, String, WatchEventRaw)>,
     /// When `true`, mutations buffer their events instead of broadcasting them.
     fuzz_watch_events: bool,
     /// Per-object field ownership: object key → (field path → manager name).
     ///
     /// Built up by [`ssa_apply`](Self::ssa_apply).  Consulted on every
-    /// `application/apply-patch+yaml` request to detect conflicts between
-    /// field managers.  Stored separately from the object JSON so that the
+    /// non-force `application/apply-patch+yaml` request to detect conflicts
+    /// between field managers (a force apply skips the conflict check and
+    /// steals ownership).  Stored separately from the object JSON so that the
     /// conflict-detection logic does not have to parse `managedFields`.
     field_ownership: HashMap<StoreKey, HashMap<String, String>>,
 }
@@ -309,7 +320,8 @@ impl Store {
     /// directly.  When fuzzing is off the behaviour is identical to a direct
     /// broadcast.  When fuzzing is on, events accumulate until
     /// [`flush_pending_watch_events`](Self::flush_pending_watch_events) is
-    /// called at each tick boundary by [`World::advance`].
+    /// called by `World::advance`, after the clock moves and before
+    /// `run_until_idle` yields to spawned tasks.
     fn queue_or_broadcast(
         &mut self,
         group: &str,
@@ -330,11 +342,12 @@ impl Store {
         }
     }
 
-    /// Shuffle the pending event buffer (when fuzzing is active) and broadcast
-    /// all queued events to their respective GVK channels.
+    /// Shuffle the pending event buffer (when fuzzing is still enabled at
+    /// flush time) and broadcast all queued events to their respective GVK
+    /// channels.
     ///
-    /// Called once per time step by [`World::advance`], after advancing the
-    /// clock and before draining the task queue with `run_until_idle`.  The
+    /// Called by `World::advance` during each advance call, after the clock
+    /// moves and before `run_until_idle` yields to spawned tasks.  The
     /// shuffle uses the seeded RNG so results are reproducible from a single
     /// seed value.
     fn flush_pending_watch_events(&mut self) {
@@ -441,7 +454,8 @@ impl Store {
     ///
     /// Increments the resource version, injects it into
     /// `metadata.resourceVersion`, stores, and returns the stored value.
-    /// Broadcasts `ADDED` or `MODIFIED` depending on whether the key was new.
+    /// Broadcasts `ADDED` or `MODIFIED` depending on whether the key was new
+    /// (buffered when fuzzing is enabled).
     fn upsert(&mut self, key: StoreKey, mut obj: Value) -> Value {
         let is_new = !self.objects.contains_key(&key);
         self.resource_version += 1;
@@ -489,7 +503,12 @@ impl Store {
     /// Apply an RFC 7396 JSON merge patch to an existing object.
     ///
     /// Returns the updated object, or `None` if the key was not found.
-    /// Broadcasts `MODIFIED`.
+    /// Broadcasts `MODIFIED` (buffered when fuzzing is enabled) — unless the
+    /// merged object is terminating (`metadata.deletionTimestamp` set) with
+    /// no remaining finalizers, in which case
+    /// the object is removed from the store and `DELETED` is broadcast
+    /// (likewise buffered when fuzzing is enabled) while the merged object is
+    /// still returned (see [`is_terminating_with_no_finalizers`]).
     fn merge_patch(&mut self, key: &StoreKey, patch: Value) -> Option<Value> {
         if !self.objects.contains_key(key) {
             return None;
@@ -538,10 +557,13 @@ impl Store {
         Some(stored)
     }
 
-    /// Update only the `status` field of an existing object, then record the patch.
+    /// Replace the `status` field of an existing object, then record the patch.
     ///
     /// Returns the updated full object, or `None` if the key was not found.
-    /// Broadcasts `MODIFIED`.
+    /// Broadcasts `MODIFIED` (buffered when fuzzing is enabled).  The
+    /// store-wide resourceVersion bump and `metadata.resourceVersion`
+    /// injection still apply.  A request body without a `status` key empties
+    /// the status (replaces it with an empty object).
     fn status_patch(&mut self, key: &StoreKey, status: Value) -> Option<Value> {
         if !self.objects.contains_key(key) {
             return None;
@@ -578,13 +600,13 @@ impl Store {
     ///
     /// If the object has non-empty `metadata.finalizers`, sets
     /// `metadata.deletionTimestamp` (stable sentinel) and keeps the object
-    /// in the store, broadcasting `MODIFIED`.  Otherwise removes the object
-    /// and broadcasts `DELETED`.
+    /// in the store, broadcasting `MODIFIED` (buffered when fuzzing is
+    /// enabled).  Otherwise removes the object and broadcasts `DELETED`
+    /// (likewise buffered when fuzzing is enabled).
     ///
-    /// The retain path also bumps `metadata.generation`, mirroring the real
-    /// apiserver: a DELETE that sets `deletionTimestamp` goes through the
-    /// full-object update path (not the patch path), which increments
-    /// `generation`.  This is distinct from a strategic merge-patch on
+    /// The retain path also bumps `metadata.generation`, but only when the
+    /// object already carries a `generation` field — objects without one are
+    /// left alone.  This is distinct from a merge-patch on
     /// `metadata.finalizers` (the `patch_finalizers` wire shape), which does
     /// *not* bump generation.  Modelling the bump here is what keeps the
     /// framework's `status.observedGeneration` — copied from
@@ -706,7 +728,8 @@ impl Store {
 ///
 /// The service is cheaply `Clone` — every clone shares the same underlying
 /// `Arc<Mutex<Store>>`, so mutations made via the kube client are immediately
-/// visible through [`FakeApiServer::insert`] / [`FakeApiServer::get_raw`].
+/// visible through [`FakeApiServer::get_raw`], and objects inserted via
+/// [`FakeApiServer::insert`] are immediately visible to the kube client.
 #[derive(Clone)]
 pub struct FakeApiServer {
     store: Arc<Mutex<Store>>,
@@ -715,8 +738,8 @@ pub struct FakeApiServer {
 impl FakeApiServer {
     /// Create a new server with an empty store, seeded RNG initialised from `seed`.
     ///
-    /// The seed controls all randomised choices made by the fake server
-    /// (tie-breaking, fault injection, watch event jitter).  Using the same
+    /// The seed controls the fake's two randomised choices — the `RandomRate`
+    /// fault draw and the pending watch-event shuffle — so using the same
     /// seed always produces the same sequence of decisions.
     pub fn new_seeded(seed: u64) -> Self {
         Self {
@@ -731,8 +754,10 @@ impl FakeApiServer {
 
     /// Insert a raw JSON object directly into the store, bypassing HTTP.
     ///
-    /// Used by `World::seed` to pre-populate the cluster without going through
-    /// the kube client.  `group` may be empty for core-group resources.
+    /// Used by `kubo::testing::World::prefill` (and, through it,
+    /// `kubo::testing::World::seed_obj`) to pre-populate the cluster without
+    /// going through the kube client.  `group` may be empty for core-group
+    /// resources.
     pub fn insert(
         &self,
         group: &str,
@@ -826,22 +851,28 @@ impl FakeApiServer {
 
     /// Enable or disable watch event fuzzing.
     ///
-    /// When enabled, mutation events are held in a per-tick buffer rather than
-    /// broadcast immediately.  At the start of each `kubo::testing::World::advance` step the
-    /// buffer is shuffled using the seeded RNG, then broadcast to all watch
-    /// subscribers.  This makes different event orderings across objects
+    /// When enabled, mutation events are held in a buffer rather than
+    /// broadcast immediately.  The buffer is flushed during each
+    /// `kubo::testing::World::advance` call, after the clock moves and before
+    /// `run_until_idle` yields to spawned tasks: the flush shuffles the
+    /// buffered events using the seeded RNG only when fuzzing is still
+    /// enabled at flush time, then broadcasts them to all watch subscribers.
+    /// Buffered events are broadcast unshuffled if fuzzing is disabled before
+    /// the next advance.  This makes different event orderings across objects
     /// deterministically reproducible from a single seed.
     ///
-    /// Disabled by default — existing tests see no behaviour change.
+    /// Disabled by default.
     pub fn set_fuzz_watch_events(&self, enabled: bool) {
         self.store.lock().unwrap().fuzz_watch_events = enabled;
     }
 
     /// Flush the pending watch-event buffer, broadcasting all queued events
-    /// (shuffled when fuzzing is active) to their respective GVK channels.
+    /// (shuffled only when fuzzing is still enabled at flush time) to their
+    /// respective GVK channels.
     ///
-    /// Called automatically by `kubo::testing::World::advance` at the start of each time
-    /// step, after advancing the clock and before draining the task queue.
+    /// Called automatically by `kubo::testing::World::advance` during each
+    /// advance call, after the clock moves and before `run_until_idle` yields
+    /// to spawned tasks.
     pub fn flush_pending_watch_events(&self) {
         self.store.lock().unwrap().flush_pending_watch_events();
     }
@@ -874,7 +905,8 @@ pub struct FaultBuilder {
 impl FaultBuilder {
     /// Inject the fault on every mutable request with probability `probability`.
     ///
-    /// The decision is deterministic — it uses the world's seeded RNG.
+    /// The decision is deterministic — it uses the fake's seeded RNG (seeded
+    /// from the world's seed).
     pub fn at_random_rate(self, probability: f64) {
         self.store.lock().unwrap().add_fault_rule(FaultRule {
             fault: self.fault,
@@ -1135,9 +1167,9 @@ fn handle_collection(
 
 /// Upgrade a `GET ?watch=1` request to a streaming watch response.
 ///
-/// Subscribes to the per-GVK broadcast channel **before** reading the store
-/// (preventing a race between subscribe and any concurrent mutation), then
-/// spawns a forwarder task that:
+/// Subscribes to the per-GVK broadcast channel before returning the response,
+/// so no mutation between subscription and the forwarder task's first receive
+/// is dropped, then spawns a forwarder task that:
 ///
 /// 1. Forwards future broadcast events — `ADDED` / `MODIFIED` / `DELETED` —
 ///    as newline-delimited JSON into an mpsc channel.
@@ -1145,8 +1177,8 @@ fn handle_collection(
 /// 3. Exits cleanly when the mpsc receiver is dropped (client disconnected)
 ///    or the broadcast channel is closed (store dropped).
 ///
-/// Lagged broadcast receivers (ring buffer overflow) skip missing events;
-/// the kube-rs watcher will re-list if it detects a gap.
+/// Lagged broadcast receivers (ring buffer overflow) skip the missed events;
+/// the fake does not signal the gap.
 fn handle_watch(
     group: &str,
     version: &str,
@@ -1341,9 +1373,9 @@ fn do_merge_patch(target: &mut Value, patch: &Value) {
 /// controller removes it.
 ///
 /// Used by [`Store::merge_patch`] to model finalizer-triggered garbage
-/// collection synchronously: a merge-patch that empties the finalizer list on
-/// a terminating object returns the updated object (matching the real patch
-/// response) but removes it from the store so the next GET returns 404.
+/// collection synchronously: a merge-patch whose merged result is terminating
+/// with no remaining finalizers returns the updated object (matching the real
+/// patch response) but removes it from the store so the next GET returns 404.
 fn is_terminating_with_no_finalizers(obj: &Value) -> bool {
     let meta = match obj.get("metadata").and_then(|m| m.as_object()) {
         Some(m) => m,
@@ -1583,7 +1615,7 @@ fn parse_query(query: &str) -> HashMap<&str, &str> {
 /// parallelism).  The harness never relies on the richer selector forms, so the
 /// fake does not model them — a selector using an unsupported form matches
 /// nothing, the same observable outcome as the real apiserver returning an
-/// empty page.
+/// empty page.  An empty selector (no terms) matches everything.
 ///
 /// A missing `metadata.labels` is treated as no labels (no term matches).
 fn matches_label_selector(obj: &Value, selector: &str) -> bool {

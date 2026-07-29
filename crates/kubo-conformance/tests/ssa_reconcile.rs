@@ -1,11 +1,12 @@
 //! The reconcile loop, end to end, driven through the framework.
 //!
-//! The other scenarios test primitives against raw HTTP. They never run the
-//! framework. This is the only scenario class that executes a real
+//! The non-reconcile scenarios test primitives against raw HTTP. The
+//! ssa_reconcile* scenarios execute a real
 //! [`Reconcile::execute`](kubo::reconcile::Reconcile::execute) — finalizer
 //! management, status-patch cadence, the `pendingCleanup` ledger, and the
-//! reverse-order cleanup walk — against both the fake and a real apiserver,
-//! and asserts the ledger progression matches.
+//! reverse-order cleanup walk — against both the fake and a real apiserver.
+//! This one asserts the ledger progression matches; its siblings pin
+//! child-resource writes, error recording, and conflict recovery.
 //!
 //! The trace is the `status.pendingCleanup` progression:
 //!
@@ -188,13 +189,6 @@ fn pipeline(
 // so the framework's full status round-trips.
 // ═══════════════════════════════════════════════════════════════════════
 
-/// The CRD's `openAPIV3Schema` declaring `pendingCleanup` as a known status
-/// field, with `x-kubernetes-preserve-unknown-fields: true` on the status node
-/// so the framework's `conditions` and `observedGeneration` (undeclared here)
-/// survive too. This is the shape a real operator CRD would use: declare the
-/// fields you own, preserve the rest. Unlike the pruning test's
-/// `schema_declaring_pending_cleanup` (which omits preserve-unknown on status
-/// to *demonstrate* pruning), this schema never prunes the framework's status.
 // ═══════════════════════════════════════════════════════════════════════
 // The scenario.
 // ═══════════════════════════════════════════════════════════════════════

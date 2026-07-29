@@ -2,16 +2,16 @@
 //!
 //! The write path (apply / status / finalizers / delete) is verified end to end
 //! against both backends; the observe path was not. The `List` capability was
-//! originally planned but never landed, and the runtime's reflector seeds
-//! from a List before switching to watch — a fake whose `Store::list` returned
-//! a different normalised content than the real apiserver would let a
-//! framework test pass against the fake and fail silently in production, and
-//! no conformance test would notice.
+//! originally planned but never landed, and kube's watcher fetches its initial
+//! list before switching to watch — a fake
+//! whose `Store::list` returned a different normalised content than the real
+//! apiserver would let a framework test pass against the fake and fail silently
+//! in production, and no conformance test would notice.
 //!
 //! This scenario pins the wire shape of the framework's `KubeHandle::list` /
 //! `list_all`: a plain `GET` against the collection path returning a `List`
 //! envelope, whose `items` (normalised, sorted by `metadata.name`) match fake
-//! and real.  It exercises the three states a controller's reflector cares
+//! and real.  It exercises the three states a controller's watch cache cares
 //! about: the object present after a create, the object reflecting a spec
 //! mutation, and the object absent after a delete.
 //!

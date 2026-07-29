@@ -10,8 +10,9 @@
 //! - Every non-`StripTodo` registry id is referenced by at least one
 //!   `assert_known_divergence(DivId::X)` call in the test files. Scan-enforced
 //!   by [`every_pinned_id_is_referenced_by_a_test`].
-//! - Every registry entry's `pinned_by` test name exists as a `#[test] fn` in
-//!   the named test file. Enforced by [`every_pinned_by_test_exists`].
+//! - Every registry entry's `pinned_by` test name exists as a function
+//!   definition in the named test file. Enforced by
+//!   [`every_pinned_by_test_exists`].
 //!
 //! And the doc-generation check:
 //!
@@ -132,8 +133,8 @@ fn every_pinned_id_is_referenced_by_a_test() {
     );
 }
 
-/// Every registry entry's `pinned_by` test name exists as a `#[test] fn` in the
-/// named test file. A stale `pinned_by` (the test was renamed or removed) is
+/// Every registry entry's `pinned_by` test name exists as a function definition
+/// in the named test file. A stale `pinned_by` (the test was renamed or removed) is
 /// the silent-staleness failure mode a stale `pinned_by` field can produce; this
 /// check makes it loud.
 #[test]

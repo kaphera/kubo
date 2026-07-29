@@ -8,13 +8,14 @@
 //! field: the controller writes it, the apiserver accepts it, the next GET
 //! shows it gone, and the controller never learns why.
 //!
-//! This scenario is real-cluster-only and deliberately asymmetric: the fake
-//! and real assertions differ, and [`assert_equivalent`] is *not* called.  It
-//! asserts the *boundary* of equivalence — which status fields a CRD must
-//! declare for the framework to work — and iterates the framework-managed
-//! status fields derived from `ConformanceObject`'s schemars output, so a new
-//! framework status field automatically enters this surface without a manual
-//! update.
+//! The scenario's assertions are deliberately asymmetric: the fake half runs
+//! unconditionally with meaningful assertions, and only the divergent
+//! real-side assertions are `k3d`-gated.  [`assert_equivalent`] is *not*
+//! called.  The scenario asserts the *boundary* of equivalence — which status
+//! fields a CRD must declare for the framework to work — and iterates the
+//! framework-managed status fields derived from `ConformanceObject`'s schemars
+//! output, so a new framework status field automatically enters this surface
+//! without a manual update.
 //!
 //! Procedure:
 //! 1. Reinstall the CRD with a status schema that *declares* every derived
@@ -38,8 +39,9 @@ use serde_json::{Map, Value, json};
 /// every framework-managed status field derived from `ConformanceObject`'s
 /// schemars output.  The top-level object keeps
 /// `x-kubernetes-preserve-unknown-fields: true` so undeclared *spec* fields
-/// still pass; the `status` node has its own structured schema (each field
-/// declared with a minimal `{ "type": <type> }`, no `preserve-unknown`), so the
+/// still pass; the `status` node itself has no `preserve-unknown` and carries
+/// its own structured schema (each field declared with a minimal type keyword
+/// plus the fragments structural-schema validation makes mandatory), so the
 /// apiserver prunes any status field the schema does not declare.
 ///
 /// This is hand-written by construction: the pruning mechanism requires a
@@ -122,7 +124,7 @@ fn status_writing_all_derived_fields() -> Value {
 /// scenario's object before the status write.  The fake path no-ops the reinstall
 /// steps (it has no schema); the real path does the delete/wait/recreate.  The
 /// assertions iterate the derived framework status fields, so a new field added
-/// added to `ResourceStatus` or `ConformanceFields` is exercised here automatically.
+/// to `ResourceStatus` or `ConformanceFields` is exercised here automatically.
 #[test]
 fn ssa_status_pruning_is_the_ledger_killer() {
     let status_write = status_writing_all_derived_fields();
