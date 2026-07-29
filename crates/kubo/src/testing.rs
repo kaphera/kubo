@@ -9,13 +9,16 @@
 //! Property assertion functions live in [`properties`].
 //! Import them from there:
 //!
-//! ```ignore
+//! ```rust,no_run
+//! # use kubo::testing::fixtures::DummyStatus;
+//! # fn example(world: &kubo::testing::World) {
 //! use kubo::testing::properties::*;
 //!
-//! let ticks: Vec<MyStatus> = world.status_ticks("ns", "obj");
+//! let ticks: Vec<DummyStatus> = world.status_ticks("ns", "obj");
 //!
-//! assert_monotonic(&ticks, |s| s.mount_path.is_some(), "mount_path");
+//! assert_monotonic(&ticks, |s| s.touched.is_some(), "touched");
 //! assert_converges(&ticks, |s| is_ready(&s.conditions), "reaches Ready");
+//! # }
 //! ```
 
 pub mod fixtures;

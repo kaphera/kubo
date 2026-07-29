@@ -106,7 +106,7 @@ where
     /// Returns a fully-configured pipeline with status builder attached
     /// (via `.status()`). The Runtime calls `.execute(FINALIZER)` on it.
     ///
-    /// ```ignore
+    /// ```rust,ignore (illustrative fragment: elided return type and bodies)
     /// fn reconcile<'a>(&self, ctx: &'a ControllerContext, obj: Arc<R>, rec: Reconcile<'a, R>) -> ... {
     ///     rec.effect(CreateDatabase { .. })
     ///        .poll(WaitForReady { .. })

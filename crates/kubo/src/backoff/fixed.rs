@@ -11,11 +11,19 @@ use super::{Backoff, BackoffContext};
 
 /// Returns the same duration on every call.
 ///
-/// ```ignore
+/// ```rust
+/// # use kubo::backoff::fixed::Fixed;
+/// # use kubo::gate::Outcome;
+/// # use kubo::utils::ConditionContext;
+/// # use std::time::Duration;
+/// # fn wait_outcome() -> Outcome<String> {
+/// #     let cx = ConditionContext::new(0);
 /// Outcome::Wait {
 ///     condition: cx.not_ready_condition("Pending", "waiting for dependency"),
 ///     backoff: Box::new(Fixed::new(Duration::from_secs(10))),
 /// }
+/// # }
+/// # fn main() { wait_outcome(); }
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Fixed(Duration);

@@ -83,8 +83,12 @@ pub fn dummy(name: &str, namespace: &str, field: &str) -> DummyResource {
 ///
 /// Use this in tests that only care about the object's identity, not its spec:
 ///
-/// ```ignore
+/// ```rust,no_run
+/// # use kubo::testing::World;
+/// # use kubo::testing::fixtures::make_dummy;
+/// # async fn example(world: &kubo::testing::World) {
 /// world.create(make_dummy("ns", "obj-1")).await;
+/// # }
 /// ```
 pub fn make_dummy(ns: &str, name: &str) -> DummyResource {
     dummy(name, ns, "default")
@@ -93,7 +97,7 @@ pub fn make_dummy(ns: &str, name: &str) -> DummyResource {
 /// Build a `DummyResource` with a given [`DummySpec`], suitable for property
 /// tests where the spec is strategy-generated.
 ///
-/// ```ignore
+/// ```rust,ignore (illustrative fragment: #[strategy] is only valid inside #[kubo::property_test])
 /// fn my_test(
 ///     #[strategy(any_dummy_spec())] spec: DummySpec,
 /// ) {

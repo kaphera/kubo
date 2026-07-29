@@ -160,12 +160,20 @@ impl World {
     ///
     /// Pass this to `Reconcile::new` to run a pipeline against the fake:
     ///
-    /// ```ignore
+    /// ```rust,no_run
+    /// # use kubo::listener::Listener as _;
+    /// # use kubo::reconcile::{Reconcile, ReconcileError};
+    /// # use kubo::testing::fixtures::{DummyListener, DummyStatus, make_dummy};
+    /// # use std::sync::Arc;
+    /// # async fn example(world: &kubo::testing::World) -> Result<(), ReconcileError> {
+    /// # let obj = Arc::new(make_dummy("ns", "obj"));
     /// let env = world.env("kubo-test");
     /// let action = Reconcile::new(&env, obj)
-    ///     .status(|_, _| MyStatus::default())
-    ///     .execute(FINALIZER)
+    ///     .status(|_, _| DummyStatus::default())
+    ///     .execute(DummyListener::FINALIZER)
     ///     .await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn env(&self, field_manager: &str) -> KubeHandle {
         KubeHandle::new(self.client.clone(), field_manager)
@@ -464,7 +472,7 @@ impl World {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust,ignore (illustrative fragment: reqwest is not a workspace dependency; CRD and listener scaffolding elided)
     /// let mut ext = Extensions::new();
     /// ext.insert(reqwest::Client::default());
     /// ext.insert(Arc::new(MyTokenCache::default()));
@@ -484,10 +492,13 @@ impl World {
     /// Returns a [`FaultBuilder`] — call one of its trigger methods to
     /// activate the rule:
     ///
-    /// ```ignore
+    /// ```rust,no_run
+    /// # use kubo::testing::Fault;
+    /// # async fn example(world: &kubo::testing::World) {
     /// world.fault(Fault::Conflict).at_random_rate(0.10);
     /// world.fault(Fault::Internal).next_n(3);
     /// world.fault(Fault::Throttled).once();
+    /// # }
     /// ```
     ///
     /// Faults are injected on mutable operations (PATCH / DELETE) only.  The

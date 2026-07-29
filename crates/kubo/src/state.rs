@@ -17,7 +17,7 @@
 //!
 //! # Usage in Effects
 //!
-//! ```ignore
+//! ```rust,ignore (illustrative fragment: bare method sketch outside its impl)
 //! // In your effect's apply method:
 //! async fn apply(&self, cx: &ReconcileContext<K>, ops: &KubeHandle, state: &State) -> Result<EffectOutcome<String>, Self::Error> {
 //!     let upstream_url = state.require::<ResolveDatabase>()?;
@@ -40,7 +40,8 @@ use std::{
 /// Implement this on your gate or effect struct. The `Value` type is what
 /// gets stored in and retrieved from the [`State`] bag.
 ///
-/// ```ignore
+/// ```rust
+/// # use kubo::state::StateKey;
 /// struct ResolveVaultInstance { /* fields */ }
 ///
 /// impl StateKey for ResolveVaultInstance {

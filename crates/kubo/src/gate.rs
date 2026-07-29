@@ -16,7 +16,7 @@
 //!
 //! # Implementing a Gate
 //!
-//! ```ignore
+//! ```rust,ignore (illustrative fragment: invented domain types)
 //! struct ResolveDatabase {
 //!     name: String,
 //!     namespace: String,

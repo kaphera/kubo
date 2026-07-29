@@ -15,7 +15,7 @@
 //!
 //! # Implementing a Poll
 //!
-//! ```ignore
+//! ```rust,ignore (illustrative fragment: invented domain types)
 //! struct WaitForDatabaseReady {
 //!     name: String,
 //! }

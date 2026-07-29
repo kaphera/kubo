@@ -40,7 +40,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust,ignore (illustrative fragment: placeholder literals)
 //! use std::sync::Arc;
 //!
 //! use kubo::group::Group;

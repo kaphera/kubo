@@ -30,11 +30,19 @@ use super::{Backoff, BackoffContext};
 ///
 /// Defaults: base = 15s, cap = 300s (5 min), factor = 2.0.
 ///
-/// ```ignore
+/// ```rust
+/// # use kubo::backoff::exponential::Exponential;
+/// # use kubo::gate::Outcome;
+/// # use kubo::utils::ConditionContext;
+/// # use std::time::Duration;
+/// # fn wait_outcome() -> Outcome<String> {
+/// #     let cx = ConditionContext::new(0);
 /// Outcome::Wait {
 ///     condition: cx.not_ready_condition("VaultUnavailable", "connection refused"),
 ///     backoff: Box::new(Exponential::new(Duration::from_secs(5)).cap(Duration::from_secs(120))),
 /// }
+/// # }
+/// # fn main() { wait_outcome(); }
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Exponential {

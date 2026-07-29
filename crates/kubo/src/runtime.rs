@@ -108,7 +108,7 @@ impl RuntimeConfig {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust,ignore (illustrative fragment: reqwest is not a workspace dependency; listener definitions elided)
 /// use kubo::runtime::Runtime;
 ///
 /// Runtime::new("my-operator", client)

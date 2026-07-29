@@ -65,7 +65,7 @@ use syn::{FnArg, ItemFn, LitInt, Token, Type, parse::Parse, parse_macro_input};
 ///
 /// # Single-world form
 ///
-/// ```rust,ignore
+/// ```rust,ignore (kubo is not a dependency of this crate, so its doctests cannot link it)
 /// #[kubo::test]
 /// async fn converges(world: &mut World) {
 ///     world.seed_listener(MyListener);
@@ -77,7 +77,7 @@ use syn::{FnArg, ItemFn, LitInt, Token, Type, parse::Parse, parse_macro_input};
 ///
 /// # Multi-world form
 ///
-/// ```rust,ignore
+/// ```rust,ignore (kubo is not a dependency of this crate, so its doctests cannot link it)
 /// #[kubo::test]
 /// async fn two_clusters(world_a: &mut World, world_b: &mut World) {
 ///     world_a.create(make_obj("ns", "a")).await;
@@ -89,7 +89,7 @@ use syn::{FnArg, ItemFn, LitInt, Token, Type, parse::Parse, parse_macro_input};
 ///
 /// # Iteration form
 ///
-/// ```rust,ignore
+/// ```rust,ignore (kubo is not a dependency of this crate, so its doctests cannot link it)
 /// #[kubo::test(iterations = 64)]
 /// async fn is_reproducible(world: &mut World) {
 ///     world.seed_listener(MyListener);
@@ -392,7 +392,7 @@ fn is_world_ref_mut(ty: &Type) -> bool {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,ignore (kubo is not a dependency of this crate, so its doctests cannot link it)
 /// #[kubo::property_test]
 /// async fn ops_sequence_well_behaved(
 ///     world: &mut World,

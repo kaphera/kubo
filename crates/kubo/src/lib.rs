@@ -300,7 +300,15 @@ pub enum ReconcilerError {
 /// to extract the current conditions automatically. The implementation
 /// is always the same pattern:
 ///
-/// ```ignore
+/// ```rust
+/// # use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
+/// # use kubo::HasConditions;
+/// # struct MyStatus {
+/// #     conditions: Vec<Condition>,
+/// # }
+/// # struct MyResource {
+/// #     status: Option<MyStatus>,
+/// # }
 /// impl HasConditions for MyResource {
 ///     fn conditions(&self) -> Vec<Condition> {
 ///         self.status.as_ref().map(|s| s.conditions.clone()).unwrap_or_default()

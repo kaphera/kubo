@@ -108,7 +108,7 @@ pub enum ReconcileError {
 /// `kube::Client`. Swap the client for a `kubo::testing::World`-backed one
 /// to run the same pipeline against the fake API server in tests.
 ///
-/// ```ignore
+/// ```rust,ignore (illustrative fragment: placeholder literals and undefined context)
 /// use kubo::reconcile::Reconcile;
 ///
 /// Reconcile::new(ctx.ops(), obj.clone())
@@ -431,7 +431,7 @@ impl<'r, R: EnvResource + HasConditions> Reconcile<'r, R> {
     /// This is the terminal builder method — call it last, after all gates,
     /// effects, and polls are registered:
     ///
-    /// ```ignore
+    /// ```rust,ignore (illustrative fragment: placeholder literals)
     /// Reconcile::new(ops, obj)
     ///     .effect(CreateDatabase { .. })
     ///     .poll(WaitForReady { .. })

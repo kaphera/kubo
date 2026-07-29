@@ -838,7 +838,9 @@ impl FakeApiServer {
     /// Return a [`FaultBuilder`] that installs a fault rule into this server
     /// when a trigger method is called.
     ///
-    /// ```ignore
+    /// ```rust
+    /// # use kubo_test_fakeapi::{FakeApiServer, Fault};
+    /// # let server = FakeApiServer::new();
     /// server.fault_builder(Fault::Conflict).at_random_rate(0.10);
     /// server.fault_builder(Fault::Internal).next_n(3);
     /// ```
@@ -891,11 +893,13 @@ impl Default for FakeApiServer {
 /// Call one of the trigger methods to register the fault rule into the fake
 /// server.  The rule is active immediately after the call.
 ///
-/// ```ignore
-/// world.fault(Fault::Conflict).at_random_rate(0.10);
-/// world.fault(Fault::Internal).next_n(3);
-/// world.fault(Fault::Throttled).once();
-/// world.fault(Fault::NotFound).always();
+/// ```rust
+/// # use kubo_test_fakeapi::{FakeApiServer, Fault};
+/// # let server = FakeApiServer::new();
+/// server.fault_builder(Fault::Conflict).at_random_rate(0.10);
+/// server.fault_builder(Fault::Internal).next_n(3);
+/// server.fault_builder(Fault::Throttled).once();
+/// server.fault_builder(Fault::NotFound).always();
 /// ```
 pub struct FaultBuilder {
     fault: Fault,

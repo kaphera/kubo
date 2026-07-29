@@ -19,7 +19,7 @@
 //!
 //! # Implementing an Effect
 //!
-//! ```ignore
+//! ```rust,ignore (illustrative fragment: full CRD and error scaffolding omitted)
 //! struct CreateVaultMount {
 //!     namespace: String,
 //!     name: String,

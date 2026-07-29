@@ -52,12 +52,19 @@ impl Display for ConditionStatus {
 /// to your gates, effects, and polls. This keeps generation tracking and condition
 /// naming centralised rather than scattered across step implementations.
 ///
-/// ```ignore
+/// ```rust
+/// # use kubo::utils::ConditionContext;
+/// # use kube::api::ObjectMeta;
+/// # struct MyObj {
+/// #     metadata: ObjectMeta,
+/// # }
+/// # let obj = MyObj { metadata: ObjectMeta::default() };
 /// let cx = ConditionContext::new(obj.metadata.generation.unwrap_or(0))
 ///     .with_ready_reason("Provisioned", "All resources created");
 ///
 /// // In a gate:
 /// cx.not_ready_condition("DependencyPending", "upstream database not ready yet")
+/// # ;
 /// ```
 pub struct ConditionContext {
     generation: i64,

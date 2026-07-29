@@ -15,22 +15,26 @@
 //! properties over the same tick sequence to build confidence that the
 //! pipeline behaves correctly:
 //!
-//! ```ignore
-//! let ticks: Vec<MyStatus> = world.status_ticks("ns", "obj");
+//! ```rust,no_run
+//! # use kubo::testing::fixtures::DummyStatus;
+//! # use kubo::testing::properties::*;
+//! # fn example(world: &kubo::testing::World) {
+//! let ticks: Vec<DummyStatus> = world.status_ticks("ns", "obj");
 //!
 //! // Structural: fields never regress once populated.
-//! assert_monotonic(&ticks, |s| s.url.is_some(), "url");
-//! assert_monotonic(&ticks, |s| s.secret_ref.is_some(), "secret_ref");
+//! assert_monotonic(&ticks, |s| s.touched.is_some(), "touched");
+//! assert_monotonic(&ticks, |s| s.ready, "ready");
 //!
-//! // Causal: secret cannot appear before the URL it depends on.
-//! assert_causal(&ticks, |s| s.url.is_some(), |s| s.secret_ref.is_some(), "url → secret");
+//! // Causal: touched cannot appear before ready.
+//! assert_causal(&ticks, |s| s.ready, |s| s.touched.is_some(), "ready → touched");
 //!
 //! // Terminal: the final state must be ready.
 //! assert_converges(&ticks, |s| is_ready(&s.conditions), "ready");
 //!
 //! // Safety: we must never publish a status with both fields absent after
 //! // either has been populated (no full regression).
-//! assert_never(&ticks[1..], |s| s.url.is_none() && s.secret_ref.is_none(), "full wipe");
+//! assert_never(&ticks[1..], |s| !s.ready && s.touched.is_none(), "full wipe");
+//! # }
 //! ```
 
 use std::fmt;
@@ -83,7 +87,10 @@ impl std::error::Error for PropertyViolation {}
 ///
 /// Use this as a predicate with [`assert_converges`]:
 ///
-/// ```ignore
+/// ```rust,no_run
+/// # use kubo::testing::fixtures::DummyStatus;
+/// # use kubo::testing::properties::{assert_converges, is_ready};
+/// # let ticks: Vec<DummyStatus> = Vec::new();
 /// assert_converges(&ticks, |s| is_ready(&s.conditions), "reaches Ready");
 /// ```
 pub fn is_ready(conditions: &[Condition]) -> bool {
@@ -99,10 +106,15 @@ pub fn is_ready(conditions: &[Condition]) -> bool {
 /// Use this after deleting an object and running until idle to verify that
 /// the controller cleaned up correctly:
 ///
-/// ```ignore
+/// ```rust,no_run
+/// # use kubo::listener::Listener as _;
+/// # use kubo::testing::fixtures::{DummyListener, DummyResource};
+/// # use kubo::testing::properties::assert_no_leaks;
+/// # async fn example(world: &kubo::testing::World) {
 /// world.delete::<DummyResource>("ns", "obj-1").await;
 /// world.run_until_idle().await;
 /// assert_no_leaks::<DummyResource>(&world, "ns", "obj-1", DummyListener::FINALIZER);
+/// # }
 /// ```
 ///
 /// The assertion passes if the object no longer exists (it was fully

@@ -10,11 +10,15 @@
 //! `World::env(field_manager)` returns a ready handle, so the same production
 //! code paths run against the fake API server.
 //!
-//! ```ignore
+//! ```rust,no_run
+//! # use kubo::environment::KubeHandle;
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = kube::Client::try_default().await?;
 //! // Field manager is derived from the operator name automatically by Runtime.
 //! // To construct one manually (e.g. in integration tests):
 //! let ops = KubeHandle::new(client, "my-operator");
+//! # Ok(())
+//! # }
 //! ```
 
 use kube::{
