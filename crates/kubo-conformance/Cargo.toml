@@ -10,16 +10,22 @@ publish = false
 
 [features]
 # Enable this feature when running against a real k3d cluster.
-# Gated behind a feature flag because it requires a live cluster.
-k3d = ["dep:kube", "dep:k8s-openapi"]
+# Gated behind a feature flag because it requires a live cluster. The crate
+# itself (the fake path, the typed `ConformanceObject`, the `RunReconcile` step)
+# compiles without it; `k3d` only switches on the real-cluster execution arms.
+k3d = []
 
 [dependencies]
+kubo = { workspace = true }
 kubo-test-fakeapi = { workspace = true }
+async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+k8s-openapi = { workspace = true, features = ["latest"] }
+kube = { workspace = true, features = ["client", "derive"] }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 tower = { workspace = true }
-kube = { workspace = true, features = ["client"], optional = true }
-k8s-openapi = { workspace = true, features = ["latest"], optional = true }

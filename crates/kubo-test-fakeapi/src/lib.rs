@@ -382,6 +382,18 @@ impl Store {
             }
         }
 
+        // Capture the pre-merge state so the generation bump can decide whether
+        // `.spec` actually changed.  The real apiserver increments
+        // `metadata.generation` only on spec-changing writes: a create starts at
+        // 1, a subsequent apply that mutates `.spec` increments, and an
+        // idempotent re-apply (or a metadata-only apply) does not.  Status
+        // patches and finalizer merge-patches go through other entry points and
+        // never bump generation.  Modelling this here is what lets the framework
+        // copy `metadata.generation` into `status.observedGeneration` and have it
+        // compare equivalent fake-vs-real.
+        let is_new = !self.objects.contains_key(&key);
+        let old_spec = self.objects.get(&key).and_then(|o| o.get("spec")).cloned();
+
         // Merge patch onto existing object (or start from an empty object).
         let mut obj = self
             .objects
@@ -389,6 +401,24 @@ impl Store {
             .cloned()
             .unwrap_or_else(|| Value::Object(Default::default()));
         do_merge_patch(&mut obj, &patch);
+
+        let new_spec = obj.get("spec").cloned();
+        if is_new || old_spec != new_spec {
+            let next_gen = if is_new {
+                1u64
+            } else {
+                self.objects
+                    .get(&key)
+                    .and_then(|o| o.get("metadata"))
+                    .and_then(|m| m.get("generation"))
+                    .and_then(Value::as_u64)
+                    .map(|g| g + 1)
+                    .unwrap_or(1)
+            };
+            if let Some(meta) = obj.get_mut("metadata").and_then(Value::as_object_mut) {
+                meta.insert("generation".to_string(), Value::from(next_gen));
+            }
+        }
 
         // Update field ownership after a successful merge.
         let ownership = self.field_ownership.entry(key.clone()).or_default();
@@ -469,13 +499,36 @@ impl Store {
         }
 
         let stored = obj.clone();
-        self.queue_or_broadcast(
-            &key.group,
-            &key.version,
-            &key.resource,
-            "MODIFIED",
-            stored.clone(),
-        );
+
+        // Finalizer-triggered garbage collection.  In a real apiserver, once an
+        // object has a `deletionTimestamp` and its finalizer list becomes empty,
+        // the GC controller removes it asynchronously.  The patch response still
+        // carries the updated object (finalizers empty, `deletionTimestamp` set),
+        // but the object is gone from the store before the next request — so a
+        // GET returns 404.  Model this synchronously: return the merged object
+        // (matching the real patch response) but remove it from the store and
+        // broadcast DELETED instead of MODIFIED.  Without this, the fake retains
+        // a terminating object after its last finalizer is cleared, diverging
+        // from real on the finalizer-teardown row (a terminating object whose
+        // last finalizer is cleared must disappear from the store, not linger).
+        if is_terminating_with_no_finalizers(&stored) {
+            self.objects.remove(key);
+            self.queue_or_broadcast(
+                &key.group,
+                &key.version,
+                &key.resource,
+                "DELETED",
+                stored.clone(),
+            );
+        } else {
+            self.queue_or_broadcast(
+                &key.group,
+                &key.version,
+                &key.resource,
+                "MODIFIED",
+                stored.clone(),
+            );
+        }
         Some(stored)
     }
 
@@ -522,6 +575,16 @@ impl Store {
     /// in the store, broadcasting `MODIFIED`.  Otherwise removes the object
     /// and broadcasts `DELETED`.
     ///
+    /// The retain path also bumps `metadata.generation`, mirroring the real
+    /// apiserver: a DELETE that sets `deletionTimestamp` goes through the
+    /// full-object update path (not the patch path), which increments
+    /// `generation`.  This is distinct from a strategic merge-patch on
+    /// `metadata.finalizers` (the `patch_finalizers` wire shape), which does
+    /// *not* bump generation.  Modelling the bump here is what keeps the
+    /// framework's `status.observedGeneration` — copied from
+    /// `metadata.generation` at the next reconcile pass — equivalent
+    /// fake-vs-real across a delete-then-cleanup lifecycle.
+    ///
     /// Returns `None` if the key was not found.
     fn finalizer_delete(&mut self, key: &StoreKey) -> Option<Value> {
         let finalizer_count = self
@@ -541,6 +604,13 @@ impl Store {
                 meta.insert("resourceVersion".to_string(), Value::String(rv));
                 meta.entry("deletionTimestamp")
                     .or_insert_with(|| Value::String("2024-01-01T00:00:00Z".to_string()));
+                // Bump generation on the delete-retain update, as the real
+                // apiserver does.  Resources that do not track generation (no
+                // `generation` field set) are left alone — matching the real
+                // apiserver, which only bumps for kinds that carry generation.
+                if let Some(g) = meta.get("generation").and_then(Value::as_u64) {
+                    meta.insert("generation".to_string(), Value::from(g + 1));
+                }
             }
             let stored = obj.clone();
             self.queue_or_broadcast(
@@ -1020,9 +1090,21 @@ fn handle_collection(
         handle_watch(group, version, resource, namespace, store)
     } else {
         let store_guard = store.lock().unwrap();
-        let items = store_guard.list(group, version, resource, namespace);
+        let mut items = store_guard.list(group, version, resource, namespace);
         let rv = store_guard.resource_version;
         drop(store_guard);
+
+        // `labelSelector` equality filtering.  The real
+        // apiserver supports the full selector grammar (set-based, existence,
+        // `!=`); the fake models only the comma-separated `key=value` equality
+        // form, which is what the conformance harness uses to isolate a
+        // scenario's own object under parallel real-cluster runs.  Unknown
+        // selector forms are treated as no match (the item is dropped), so a
+        // selector that matches nothing returns an empty `items` array — the
+        // same observable outcome as the real apiserver.
+        if let Some(selector) = params.get("labelSelector") {
+            items.retain(|obj| matches_label_selector(obj, selector));
+        }
 
         let api_version = if group.is_empty() {
             version.to_string()
@@ -1248,6 +1330,28 @@ fn do_merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
+/// Whether an object is terminating (has `metadata.deletionTimestamp`) with no
+/// remaining finalizers — the condition under which the apiserver's GC
+/// controller removes it.
+///
+/// Used by [`Store::merge_patch`] to model finalizer-triggered garbage
+/// collection synchronously: a merge-patch that empties the finalizer list on
+/// a terminating object returns the updated object (matching the real patch
+/// response) but removes it from the store so the next GET returns 404.
+fn is_terminating_with_no_finalizers(obj: &Value) -> bool {
+    let meta = match obj.get("metadata").and_then(|m| m.as_object()) {
+        Some(m) => m,
+        None => return false,
+    };
+    if !meta.contains_key("deletionTimestamp") {
+        return false;
+    }
+    match meta.get("finalizers").and_then(|f| f.as_array()) {
+        Some(arr) => arr.iter().filter(|v| !v.is_null()).count() == 0,
+        None => true,
+    }
+}
+
 // ── SSA field path extraction ───────────────────────────────────────────────────
 
 /// Extract all leaf field paths from a JSON value as dot-separated strings.
@@ -1458,6 +1562,45 @@ fn parse_query(query: &str) -> HashMap<&str, &str> {
         .collect()
 }
 
+// ── Label-selector matching ──────────────────────────────────────────────────
+
+/// Evaluate a comma-separated `key=value` equality `labelSelector` against an
+/// object's `metadata.labels`.
+///
+/// This is the subset of the Kubernetes label-selector grammar the fake
+/// models: equality only (`key=value`), multiple terms ANDed by commas, no
+/// `!=`, no `key` (existence), no `key in (...)`, no `!key`.  It exists so the
+/// conformance harness can isolate a scenario's own object under parallel
+/// real-cluster runs (the real apiserver returns every object in the
+/// collection; the fake's `Store::list` returns only the objects the scenario
+/// created, so without a selector a List differential would break under
+/// parallelism).  The harness never relies on the richer selector forms, so the
+/// fake does not model them — a selector using an unsupported form matches
+/// nothing, the same observable outcome as the real apiserver returning an
+/// empty page.
+///
+/// A missing `metadata.labels` is treated as no labels (no term matches).
+fn matches_label_selector(obj: &Value, selector: &str) -> bool {
+    let labels = obj
+        .get("metadata")
+        .and_then(|m| m.get("labels"))
+        .and_then(Value::as_object);
+    for term in selector.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some((key, val)) = term.split_once('=') else {
+            return false;
+        };
+        let matched = labels
+            .and_then(|l| l.get(key.trim()))
+            .and_then(Value::as_str)
+            .map(|v| v == val.trim())
+            .unwrap_or(false);
+        if !matched {
+            return false;
+        }
+    }
+    true
+}
+
 // ── Response helpers ──────────────────────────────────────────────────────────
 
 fn json_response(status: StatusCode, body: Value) -> Result<Response<ResponseBody>, BoxError> {
@@ -1479,4 +1622,69 @@ fn not_found_status(name: &str) -> Value {
         "reason": "NotFound",
         "code": 404,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_label_selector;
+    use serde_json::json;
+
+    fn obj_with_labels(labels: serde_json::Value) -> serde_json::Value {
+        json!({ "metadata": { "labels": labels } })
+    }
+
+    #[test]
+    fn label_selector_equality_matches_a_present_label() {
+        let obj = obj_with_labels(json!({ "conformance.kubo.dev/scenario": "ssa-observe-list" }));
+        assert!(matches_label_selector(
+            &obj,
+            "conformance.kubo.dev/scenario=ssa-observe-list"
+        ));
+    }
+
+    #[test]
+    fn label_selector_equality_rejects_a_mismatched_value() {
+        let obj = obj_with_labels(json!({ "conformance.kubo.dev/scenario": "ssa-observe-list" }));
+        assert!(!matches_label_selector(
+            &obj,
+            "conformance.kubo.dev/scenario=other"
+        ));
+    }
+
+    #[test]
+    fn label_selector_rejects_when_the_label_is_absent() {
+        let obj = obj_with_labels(json!({ "other": "value" }));
+        assert!(!matches_label_selector(
+            &obj,
+            "conformance.kubo.dev/scenario=ssa-observe-list"
+        ));
+    }
+
+    #[test]
+    fn label_selector_rejects_when_metadata_labels_is_missing() {
+        let obj = json!({ "metadata": {} });
+        assert!(!matches_label_selector(
+            &obj,
+            "conformance.kubo.dev/scenario=ssa-observe-list"
+        ));
+    }
+
+    #[test]
+    fn label_selector_ands_multiple_terms() {
+        let obj = obj_with_labels(json!({ "a": "1", "b": "2" }));
+        assert!(matches_label_selector(&obj, "a=1,b=2"));
+        assert!(!matches_label_selector(&obj, "a=1,b=3"));
+    }
+
+    #[test]
+    fn label_selector_unsupported_form_matches_nothing() {
+        // Existence-only (`key`) and set-based (`key in (...)`) forms are not
+        // modelled; they match nothing so the observable outcome (empty page)
+        // matches the real apiserver returning no items for an unmodelled form
+        // only when the selector genuinely matches nothing — the conformance
+        // harness never uses these forms.
+        let obj = obj_with_labels(json!({ "a": "1" }));
+        assert!(!matches_label_selector(&obj, "a"));
+        assert!(!matches_label_selector(&obj, "a in (1)"));
+    }
 }

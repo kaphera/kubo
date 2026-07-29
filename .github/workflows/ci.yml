@@ -22,7 +22,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix develop --command k3d cluster create kubo-conformance
+      # Pinned k3s image for bisectability: a red CI now arrives with a recorded
+      # apiserver version to bisect against, which is the failure mode this pin
+      # exists to prevent. Validated against k3s v1.35.6+k3s1 (gitCommit 87243446,
+      # build 2026-06-24). Bump deliberately: update this comment with the new tag
+      # and version so the bisectability contract stays intact. Do not use `latest`.
+      - run: nix develop --command k3d cluster create kubo-conformance --image rancher/k3s:v1.35.6-k3s1
+      - name: Resolve k3d cluster endpoint (opt the cluster in)
+        run: |
+          endpoint="$(nix develop --command kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+          echo "Resolved k3d apiserver endpoint: ${endpoint}"
+          echo "KUBO_CONFORMANCE_CLUSTER=${endpoint}" >> "$GITHUB_ENV"
       - run: nix develop --command cargo test -p kubo-conformance --features k3d
       - run: nix develop --command k3d cluster delete kubo-conformance
         if: always()

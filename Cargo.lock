@@ -918,12 +918,16 @@ dependencies = [
 name = "kubo-conformance"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "http",
  "http-body-util",
  "k8s-openapi",
  "kube",
+ "kubo",
  "kubo-test-fakeapi",
+ "schemars",
+ "serde",
  "serde_json",
  "tokio",
  "tower",

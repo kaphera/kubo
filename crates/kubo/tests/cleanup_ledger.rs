@@ -331,7 +331,16 @@ async fn apply_populates_ledger_and_cleanup_empties_it() {
 
     assert_eq!(a.load(Ordering::Relaxed), 1, "EffectA cleaned up once");
     assert_eq!(b.load(Ordering::Relaxed), 1, "EffectB cleaned up once");
-    assert!(ledger_of(&world, "ns", "obj").is_empty(), "ledger emptied");
+    // The cleanup emptied the ledger and cleared the finalizer, which triggered
+    // the fake's finalizer-aware GC — the object is gone from the store. The GC
+    // itself proves the ledger was emptied (the framework only clears the
+    // finalizer when the ledger is empty) and the teardown completed end to
+    // end. Reading the ledger directly is not possible after GC: the object is
+    // no longer in the store.
+    assert!(
+        world.get::<LedgerResource>("ns", "obj").is_none(),
+        "object GC'd after ledger emptied and finalizer cleared"
+    );
 }
 
 /// A `Wait` at an early gate produces no effect completions. The ledger
@@ -568,9 +577,13 @@ async fn cleanup_retry_persists_ledger_and_resumes() {
         "RetryOnceEffect cleaned"
     );
     assert_eq!(a.load(Ordering::Relaxed), 1, "EffectA cleaned on resume");
+    // The cleanup emptied the ledger and cleared the finalizer, which triggered
+    // the fake's finalizer-aware GC — the object is gone. The GC proves the
+    // ledger was emptied and the teardown completed (see
+    // `apply_populates_ledger_and_cleanup_empties_it` for the rationale).
     assert!(
-        ledger_of(&world, "ns", "obj").is_empty(),
-        "ledger emptied after resume"
+        world.get::<LedgerResource>("ns", "obj").is_none(),
+        "object GC'd after ledger emptied and finalizer cleared on resume"
     );
 }
 
@@ -618,16 +631,15 @@ async fn orphaned_ledger_entry_is_dropped() {
         0,
         "EffectA not in ledger → not cleaned"
     );
+    // The orphan was dropped, the ledger emptied, and the finalizer was cleared
+    // — which triggered the fake's finalizer-aware GC. The object being gone
+    // proves all three: the framework only clears the finalizer when the ledger
+    // is empty, and the fake only GCs when the finalizer is cleared. Reading
+    // the ledger or the finalizer list directly is not possible after GC: the
+    // object is no longer in the store.
     assert!(
-        ledger_of(&world, "ns", "obj").is_empty(),
-        "orphan dropped, ledger empty"
-    );
-
-    let stored = world.get::<LedgerResource>("ns", "obj").unwrap();
-    let finalizers = stored.metadata.finalizers.unwrap_or_default();
-    assert!(
-        !finalizers.contains(&"test-finalizer".to_string()),
-        "finalizer removed despite orphan"
+        world.get::<LedgerResource>("ns", "obj").is_none(),
+        "object GC'd after orphan dropped, ledger emptied, and finalizer cleared"
     );
 }
 

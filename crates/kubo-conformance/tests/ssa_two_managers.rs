@@ -16,6 +16,7 @@ use serde_json::json;
 fn ssa_two_managers_conflict_matches_real_apiserver() {
     let scenario = Scenario::new("ssa-two-managers")
         .apply("manager-a", json!({"spec": {"field": "a"}}))
+        .named("manager-a-apply")
         .apply("manager-b", json!({"spec": {"field": "b"}}))
         .expect_last_status(409);
 
@@ -30,9 +31,9 @@ fn ssa_two_managers_conflict_matches_real_apiserver() {
     // Without k3d: assert the trace shape directly.
     assert_eq!(fake_trace.entries.len(), 2, "scenario has two steps");
     assert!(
-        fake_trace.entries[0].status < 300,
+        fake_trace.entry("manager-a-apply").status < 300,
         "manager-a's initial apply must succeed (got {})",
-        fake_trace.entries[0].status
+        fake_trace.entry("manager-a-apply").status
     );
     // entry[1] status=409 is already guaranteed by expect_last_status above.
 }

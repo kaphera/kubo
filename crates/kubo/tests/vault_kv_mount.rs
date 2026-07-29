@@ -784,16 +784,15 @@ async fn run_cleanup_removes_finalizer() {
     assert!(effect1_cleaned.load(Ordering::Relaxed));
     assert!(effect2_cleaned.load(Ordering::Relaxed));
 
-    // Finalizer should have been removed.
-    let stored = world.get::<VaultKvMount>("test-ns", "my-kvm").unwrap();
-    let finalizers = stored.metadata.finalizers.unwrap_or_default();
-    assert!(!finalizers.contains(&"test-finalizer".to_string()));
-
-    // Ledger should be empty after successful cleanup.
-    let ledger_after = &stored.status.as_ref().unwrap().pending_cleanup;
+    // The cleanup emptied the ledger and cleared the finalizer, which triggered
+    // the fake's finalizer-aware GC — the object is gone from the store. The GC
+    // itself proves the finalizer was removed and the ledger was emptied (the
+    // framework only clears the finalizer when the ledger is empty, and the fake
+    // only GCs when the finalizer is cleared). Reading the object directly is
+    // not possible after GC.
     assert!(
-        ledger_after.is_empty(),
-        "ledger should be empty after cleanup"
+        world.get::<VaultKvMount>("test-ns", "my-kvm").is_none(),
+        "object GC'd after ledger emptied and finalizer cleared"
     );
 }
 
